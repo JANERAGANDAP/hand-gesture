@@ -30,7 +30,7 @@ The API is exposed as a Vercel Function at `api/[...path].ts`. Neon supplies Pos
 
 1. Import the repository into Vercel with the repository root as the project root. `vercel.json` configures installation, build, and the SPA rewrite.
 2. Set the Vercel environment variables from the linked Neon project: `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `STORAGE_PUBLIC_BUCKET`, and `STORAGE_PRIVATE_BUCKET`. Also set the app's `JWT_SECRET`, `CORS_ORIGIN`, and any optional Google/AI provider variables you use.
-3. Set `VITE_GOOGLE_CLIENT_ID` if Google sign-in is enabled and authorize the Vercel domain in the Google OAuth client. Set `VITE_API_ROOT` only if the API is hosted on a different origin; otherwise leave it unset.
+3. Set `VITE_GOOGLE_CLIENT_ID` if Google sign-in is enabled and authorize the Vercel domain in the Google OAuth client. Set `VITE_API_ROOT` only if the API is hosted on a different origin; otherwise leave it unset. Let Vercel set `NODE_ENV` and `PORT`; do not override `NODE_ENV` to `development`.
 4. Apply production migrations using the direct Neon URL:
 
    ```sh

@@ -1,4 +1,5 @@
 const configuredApiRoot = import.meta.env.VITE_API_ROOT?.trim() || "";
+const isDevelopmentBuild = import.meta.env.MODE === "development";
 const configuredApiRootIsLoopback = (() => {
   if (!configuredApiRoot) return false;
   try {
@@ -15,16 +16,16 @@ const configuredApiRootIsLoopback = (() => {
   }
 })();
 
-if (!import.meta.env.DEV && configuredApiRootIsLoopback) {
+if (!isDevelopmentBuild && configuredApiRootIsLoopback) {
   console.warn(
     "Ignoring VITE_API_ROOT in production because it points to localhost; using the same-origin API instead.",
   );
 }
 
 export const API_ROOT =
-  configuredApiRoot && (import.meta.env.DEV || !configuredApiRootIsLoopback)
+  configuredApiRoot && (isDevelopmentBuild || !configuredApiRootIsLoopback)
     ? configuredApiRoot
-    : import.meta.env.DEV
+    : isDevelopmentBuild
       ? "http://localhost:3001"
       : "";
 
