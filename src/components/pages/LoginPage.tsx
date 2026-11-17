@@ -2,6 +2,7 @@
 import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { GoogleLogin } from "@react-oauth/google";
+import { GOOGLE_SIGN_IN_CONFIGURED } from "../../config";
 import { useAuth, type Role } from "../../contexts/AuthContext";
 import AppButton from "../ui/AppButton";
 import "../../css/login.css";
@@ -341,17 +342,24 @@ const LoginPage = () => {
               </AppButton>
             </div>
 
-            <div className="fsl-login__divider">OR</div>
-
-            <div className="fsl-login__google">
-              <GoogleLogin
-                onSuccess={(res) => handleGoogleSuccess(res.credential)}
-                onError={() => setError("Google sign-in failed")}
-                text={mode === "login" ? "signin_with" : "signup_with"}
-                theme="filled_black"
-                shape="pill"
-              />
-            </div>
+            {GOOGLE_SIGN_IN_CONFIGURED ? (
+              <>
+                <div className="fsl-login__divider">OR</div>
+                <div className="fsl-login__google">
+                  <GoogleLogin
+                    onSuccess={(res) => handleGoogleSuccess(res.credential)}
+                    onError={() => setError("Google sign-in failed")}
+                    text={mode === "login" ? "signin_with" : "signup_with"}
+                    theme="filled_black"
+                    shape="pill"
+                  />
+                </div>
+              </>
+            ) : (
+              <p className="fsl-login__sub">
+                Google sign-in isn&apos;t configured. Use your email and password.
+              </p>
+            )}
           </div>
 
           <div className="fsl-login__switch">
