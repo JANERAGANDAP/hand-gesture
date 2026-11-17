@@ -88,7 +88,7 @@ const GestureDisplay: React.FC = () => {
   };
   const loadHistory = async () => {
     try {
-      const res = await fetch(`${API_ROOT}/ai-history/get-history`, {
+      const res = await fetch(`${API_ROOT}/api/ai-history/get-history`, {
         headers: authHeaders(),
       });
       const data = await res.json();

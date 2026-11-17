@@ -1,4 +1,4 @@
-﻿-- CreateTable
+-- CreateTable
 CREATE TABLE "AISentenceHistory" (
     "id" SERIAL NOT NULL,
     "language" TEXT NOT NULL DEFAULT 'FSL',

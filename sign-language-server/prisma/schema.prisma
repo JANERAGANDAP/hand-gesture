@@ -1,10 +1,18 @@
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
 }
 
 model SignGesture {
@@ -12,8 +20,8 @@ model SignGesture {
   word         String
   language     String   @default("FSL")
   gestureType  String   @default("dynamic")
-  features     String   // SQLite: store as JSON string
-  sequence     String?  // SQLite: store as JSON string
+  features     Json
+  sequence    Json?
   frameCount   Int      @default(0)
   handCropUrl  String?
   description  String?
@@ -76,7 +84,7 @@ model RecognitionLog {
   id               Int      @id @default(autoincrement())
   predictedWord    String?
   confidence       Float?
-  features         String?  // SQLite: store as JSON string
+  features         Json?
   createdAt        DateTime @default(now())
 
   @@index([predictedWord])
@@ -88,7 +96,7 @@ model User {
   email      String   @unique
   password   String?
   googleId   String?  @unique
-  role       String   @default("STUDENT")
+  role       Role     @default(STUDENT)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { apiClient, authHeaders } from "../../services/api";
-import { API_ROOT, resolveApiUrl } from "../../config";
+import { apiClient, uploadSignAsset } from "../../services/api";
+import { resolveApiUrl } from "../../config";
 import type { SignAsset } from "./types";
 
 const ADD_LANGUAGES = ["English", "Cebuano", "Tagalog", "Ilocano", "Bikolano"];
@@ -237,21 +237,11 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     }
     setSubmitting(true);
     setSubmitError(null);
-    const formData = new FormData();
-    formData.append("word", newWord.trim());
-    formData.append("file", file);
-    formData.append("language", newLanguage);
     try {
-      const res = await fetch(`${API_ROOT}/api/upload`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: formData,
+      await uploadSignAsset(file, {
+        word: newWord.trim(),
+        language: newLanguage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setSubmitError(body.error || "Upload failed. Try again.");
-        return;
-      }
       setSubmitSuccess(`"${newWord.trim()}" added to the library.`);
       closeAddPanel();
       setShowAddPanel(false);
@@ -260,7 +250,11 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
       setTimeout(() => setSubmitSuccess(null), 4000);
     } catch (err) {
       console.error("Sign upload failed:", err);
-      setSubmitError("Upload failed. Check your connection and try again.");
+      setSubmitError(
+        err instanceof Error
+          ? err.message
+          : "Upload failed. Check your connection and try again.",
+      );
     } finally {
       setSubmitting(false);
     }

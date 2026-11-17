@@ -11,7 +11,7 @@ import {
 import { RECOGNITION_CONFIG } from "../config/recognitionConfig";
 import { authenticate, requireRole } from "../middleware/auth.middleware";
 import { PRIVATE_BUCKET, putObject, signHandCropUrl } from "../config/storage";
-import { parseJsonField, stringifyJsonField } from "../utils/jsonField";
+import { parseJsonField } from "../utils/jsonField";
 
 // Hand-crops live in a private bucket, so any gesture sent to the client
 // gets its stored key swapped for a temporary readable (presigned) URL.
@@ -146,8 +146,8 @@ router.post("/", authenticate, requireRole("TEACHER", "ADMIN"), async (req, res)
         word: trimmedWord,
         language,
         gestureType,
-        features: stringifyJsonField(features),
-        sequence: stringifyJsonField(sequence),
+        features,
+        sequence,
         frameCount,
         description,
         handCropUrl: handCropUrl || null,
@@ -453,9 +453,6 @@ function pickUpdatableFields(body: Record<string, any>): Record<string, any> {
   for (const key of UPDATABLE_GESTURE_FIELDS) {
     if (body[key] !== undefined) data[key] = body[key];
   }
-  // Stringify JSON fields for SQLite compatibility
-  if (data.features !== undefined) data.features = stringifyJsonField(data.features);
-  if (data.sequence !== undefined) data.sequence = stringifyJsonField(data.sequence);
   return data;
 }
 // Editing an existing gesture — Teacher or Admin (delete is Admin-only, below).

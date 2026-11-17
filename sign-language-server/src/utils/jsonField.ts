@@ -1,5 +1,4 @@
-// Helpers for SQLite JSON string fields (Prisma stores Json as text in SQLite)
-// When reading from DB, parse string to object. When writing, stringify object.
+// Accept native PostgreSQL JSON values and legacy serialized values.
 
 export function parseJsonField<T = unknown>(raw: unknown): T | null {
   if (raw === null || raw === undefined) return null;
@@ -12,10 +11,4 @@ export function parseJsonField<T = unknown>(raw: unknown): T | null {
     }
   }
   return null;
-}
-
-export function stringifyJsonField(value: unknown): string {
-  if (value === null || value === undefined) return "null";
-  if (typeof value === "string") return value; // already a string
-  return JSON.stringify(value);
 }

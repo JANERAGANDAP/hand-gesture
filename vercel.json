@@ -1,6 +1,6 @@
 {
   "framework": "vite",
-  "installCommand": "npm ci",
+  "installCommand": "npm ci && npm ci --prefix sign-language-server",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [

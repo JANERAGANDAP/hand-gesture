@@ -34,7 +34,6 @@ COPY --from=build /app/dist ./dist
 WORKDIR /app/sign-language-server
 ENV NODE_ENV=production
 ENV SERVE_CLIENT=true
-ENV DATABASE_URL=file:/data/sign-language.db
 ENV UPLOAD_DIR=/data/public
 
 EXPOSE 3001

@@ -4,7 +4,7 @@ import AdminSignRecorder, { RECOMMENDED_RECORDINGS } from "./AdminSignRecorder";
 import TeacherInvites from "./TeacherInvites";
 import AppButton from "../ui/AppButton";
 import { API_ROOT, resolveApiUrl } from "../../config";
-import { authHeaders } from "../../services/api";
+import { authHeaders, uploadSignAsset } from "../../services/api";
 import { useAuth } from "../../contexts/AuthContext";
 import {
   getGestureSummary,
@@ -154,26 +154,14 @@ const AdminSigns = () => {
       alert("Complete all fields");
       return;
     }
-    const formData = new FormData();
-    formData.append("word", word);
-    formData.append("file", file);
-    formData.append("language", language);
-    // Only ever sent as "false" — the backend treats anything else
-    // (including this field being absent, e.g. the student Library
-    // upload flow) as publish-immediately, matching prior behavior.
-    formData.append("publish", publishNow ? "true" : "false");
+    // Unpublished uploads stay hidden from student listings until a
+    // teacher or admin reviews and publishes them.
     try {
-      const res = await fetch(`${API_ROOT}/api/upload`, {
-        method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        body: formData,
+      const data = await uploadSignAsset(file, {
+        word,
+        language,
+        publish: publishNow,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        alert(body.error || "Upload failed");
-        return;
-      }
-      const data = await res.json();
       const newAsset = {
         id: data.id,
         word: data.word,

@@ -1,14 +1,17 @@
 import express from "express";
 import multer from "multer";
-import path from "path";
+import { randomUUID } from "crypto";
 import prisma from "../config/prisma";
 import {
   PUBLIC_BUCKET,
+  PRIVATE_BUCKET,
   SIGNS_PREFIX,
   putObject,
+  getObject,
   deleteObjects,
   publicObjectUrl,
   keyFromUrl,
+  usesObjectStorage,
 } from "../config/storage";
 import { uploadLimiter } from "../middleware/rateLimiters";
 import { sanitizeSignWord, isSameSignWord } from "../utils/signWordText";
@@ -30,25 +33,49 @@ const ALLOWED_MIME_TYPES = [
   "image/webp",
 ];
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
+const MAX_CHUNK_SIZE_BYTES = 3 * 1024 * 1024;
+const MAX_CHUNK_COUNT = Math.ceil(MAX_FILE_SIZE_BYTES / MAX_CHUNK_SIZE_BYTES);
+const MIME_EXTENSIONS: Record<string, string> = {
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+function normalizeMimeType(value: string) {
+  return value.split(";", 1)[0].trim().toLowerCase();
+}
+const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
+  if (!ALLOWED_MIME_TYPES.includes(normalizeMimeType(file.mimetype))) {
+    cb(new Error("Only MP4 video or JPG/PNG/WEBP images are allowed"));
+    return;
+  }
+  cb(null, true);
+};
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: MAX_FILE_SIZE_BYTES,
   },
-  fileFilter: (_req, file, cb) => {
-    if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
-      cb(new Error("Only MP4 video or JPG/PNG/WEBP images are allowed"));
-      return;
-    }
-    cb(null, true);
+  fileFilter,
+});
+const chunkUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_CHUNK_SIZE_BYTES,
   },
+  fileFilter,
 });
 // multer's fileFilter/size-limit errors call next(err), which would
 // otherwise fall through to Express's default HTML error page instead of
 // a JSON response. This wraps upload.single("file") so those errors come
 // back the same way every other error in this route does.
-function handleUpload(fieldName: string) {
-  const middleware = upload.single(fieldName);
+function handleUpload(
+  fieldName: string,
+  uploader = upload,
+  maxFileSizeLabel = "25MB",
+) {
+  const middleware = uploader.single(fieldName);
   return (
     req: express.Request,
     res: express.Response,
@@ -58,7 +85,7 @@ function handleUpload(fieldName: string) {
       if (err) {
         const message =
           err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
-            ? "File is too large (25MB max)"
+            ? `File is too large (${maxFileSizeLabel} max)`
             : err instanceof Error
               ? err.message
               : "Upload failed";
@@ -68,6 +95,258 @@ function handleUpload(fieldName: string) {
     });
   };
 }
+
+function isUploadSessionId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  );
+}
+
+function stagingKey(userId: string | number, sessionId: string, part: number) {
+  return `upload-staging/${userId}/${sessionId}/${part}`;
+}
+
+async function findDuplicate(word: string) {
+  const existingSigns = await prisma.speechSign.findMany({
+    select: { id: true, word: true },
+  });
+  return existingSigns.find((sign) => isSameSignWord(sign.word, word));
+}
+
+async function saveUploadedSign(
+  word: string,
+  language: string,
+  fileType: string,
+  fileKey: string,
+  isPublished: boolean,
+) {
+  const publicUrl = publicObjectUrl(PUBLIC_BUCKET, fileKey);
+  const created = await prisma.speechSign.create({
+    data: {
+      word,
+      file: publicUrl,
+      type: fileType,
+      isPublished,
+    },
+  });
+  await prisma.keyword.upsert({
+    where: {
+      language_keyword: {
+        language,
+        keyword: word,
+      },
+    },
+    update: {
+      value: word,
+    },
+    create: {
+      language,
+      keyword: word,
+      value: word,
+    },
+  });
+  return {
+    success: true,
+    id: created.id,
+    word,
+    file: publicUrl,
+    type: fileType,
+    isPublished: created.isPublished,
+  };
+}
+
+function parseChunkUploadMetadata(body: Record<string, unknown>) {
+  const word = typeof body.word === "string" ? sanitizeSignWord(body.word) : "";
+  const language =
+    typeof body.language === "string" ? body.language.trim() : "";
+  const fileName = typeof body.fileName === "string" ? body.fileName : "";
+  const fileType = typeof body.type === "string" ? body.type : "";
+  const size = Number(body.size);
+
+  if (
+    !word ||
+    !language ||
+    !fileName ||
+    !ALLOWED_MIME_TYPES.includes(fileType) ||
+    !Number.isInteger(size) ||
+    size < 1 ||
+    size > MAX_FILE_SIZE_BYTES
+  ) {
+    return null;
+  }
+
+  return {
+    word,
+    language,
+    fileName,
+    fileType,
+    size,
+    isPublished: body.publish !== "false" && body.publish !== false,
+  };
+}
+
+router.post("/chunk/start", authenticate, async (req: AuthedRequest, res) => {
+  try {
+    if (!usesObjectStorage()) {
+      return res.status(501).json({
+        code: "CHUNKED_UPLOADS_UNAVAILABLE",
+        error: "Chunked uploads require configured object storage",
+      });
+    }
+
+    const metadata = parseChunkUploadMetadata(req.body ?? {});
+    if (!metadata) {
+      return res.status(400).json({ error: "Invalid upload metadata" });
+    }
+    const duplicate = await findDuplicate(metadata.word);
+    if (duplicate) {
+      return res.status(409).json({
+        error: `A sign for "${duplicate.word}" already exists — edit or delete it instead of adding a near-duplicate.`,
+      });
+    }
+
+    return res.json({
+      sessionId: randomUUID(),
+      chunkSize: MAX_CHUNK_SIZE_BYTES,
+    });
+  } catch (err) {
+    console.error("Upload session start failed:", err);
+    return res.status(500).json({ error: "Could not start upload" });
+  }
+});
+
+router.post(
+  "/chunk/part",
+  authenticate,
+  handleUpload("file", chunkUpload, "3MB"),
+  async (req: AuthedRequest, res) => {
+    const file = req.file;
+    const sessionId = req.body.sessionId;
+    const partNumber = Number(req.body.partNumber);
+    const user = req.user;
+    if (
+      !file ||
+      !user ||
+      !isUploadSessionId(sessionId) ||
+      !Number.isInteger(partNumber) ||
+      partNumber < 0 ||
+      partNumber >= MAX_CHUNK_COUNT
+    ) {
+      return res.status(400).json({ error: "Invalid upload chunk" });
+    }
+
+    try {
+      await putObject(
+        PRIVATE_BUCKET,
+        stagingKey(user.id, sessionId, partNumber),
+        file.buffer,
+        "application/octet-stream",
+      );
+      return res.json({ success: true, partNumber });
+    } catch (err) {
+      console.error("Upload chunk storage failed:", err);
+      return res.status(500).json({ error: "Could not store upload chunk" });
+    }
+  },
+);
+
+router.post("/chunk/complete", authenticate, async (req: AuthedRequest, res) => {
+  const user = req.user;
+  const metadata = parseChunkUploadMetadata(req.body ?? {});
+  const sessionId = req.body?.sessionId;
+  const chunkCount = Number(req.body?.chunkCount);
+  if (
+    !user ||
+    !metadata ||
+    !isUploadSessionId(sessionId) ||
+    !Number.isInteger(chunkCount) ||
+    chunkCount !== Math.ceil(metadata.size / MAX_CHUNK_SIZE_BYTES) ||
+    chunkCount < 1 ||
+    chunkCount > MAX_CHUNK_COUNT
+  ) {
+    return res.status(400).json({ error: "Invalid upload completion request" });
+  }
+
+  const chunkKeys = Array.from({ length: chunkCount }, (_, part) =>
+    stagingKey(user.id, sessionId, part),
+  );
+
+  try {
+    const duplicate = await findDuplicate(metadata.word);
+    if (duplicate) {
+      await deleteObjects(PRIVATE_BUCKET, chunkKeys);
+      return res.status(409).json({
+        error: `A sign for "${duplicate.word}" already exists — edit or delete it instead of adding a near-duplicate.`,
+      });
+    }
+
+    const chunks: Buffer[] = [];
+    let totalSize = 0;
+    for (const key of chunkKeys) {
+      const chunk = await getObject(PRIVATE_BUCKET, key);
+      totalSize += chunk.length;
+      if (totalSize > metadata.size) {
+        return res.status(400).json({ error: "Upload size does not match" });
+      }
+      chunks.push(chunk);
+    }
+    if (totalSize !== metadata.size) {
+      return res.status(400).json({ error: "Upload size does not match" });
+    }
+
+    const fileKey = `${SIGNS_PREFIX}${randomUUID()}${MIME_EXTENSIONS[metadata.fileType]}`;
+    await putObject(
+      PUBLIC_BUCKET,
+      fileKey,
+      Buffer.concat(chunks, totalSize),
+      metadata.fileType,
+    );
+    const saved = await saveUploadedSign(
+      metadata.word,
+      metadata.language,
+      metadata.fileType,
+      fileKey,
+      metadata.isPublished,
+    );
+    const cleanup = await deleteObjects(PRIVATE_BUCKET, chunkKeys);
+    if (cleanup.failed) {
+      console.error(`Failed to clean up ${cleanup.failed} staged upload chunk(s).`);
+    }
+    return res.json(saved);
+  } catch (err) {
+    console.error("Upload completion failed:", err);
+    return res.status(500).json({ error: "Could not complete upload" });
+  }
+});
+
+router.post("/chunk/abort", authenticate, async (req: AuthedRequest, res) => {
+  const user = req.user;
+  const sessionId = req.body?.sessionId;
+  const chunkCount = Number(req.body?.chunkCount);
+  if (
+    !user ||
+    !isUploadSessionId(sessionId) ||
+    !Number.isInteger(chunkCount) ||
+    chunkCount < 1 ||
+    chunkCount > MAX_CHUNK_COUNT
+  ) {
+    return res.status(400).json({ error: "Invalid upload cancellation request" });
+  }
+
+  const keys = Array.from({ length: chunkCount }, (_, part) =>
+    stagingKey(user.id, sessionId, part),
+  );
+  const cleanup = await deleteObjects(PRIVATE_BUCKET, keys);
+  if (cleanup.failed) {
+    console.error(`Failed to clean up ${cleanup.failed} staged upload chunk(s).`);
+    return res.status(500).json({ error: "Could not clean up upload chunks" });
+  }
+  return res.json({ success: true });
+});
+
 // Uploading a sign asset — any signed-in user (students included). This
 // endpoint is now shared by two different UIs: the Admin sign-management
 // page (AdminSigns.tsx, unchanged) and the new record/upload actions
@@ -91,10 +370,7 @@ router.post(
     // casing/spacing) before they can quietly create two library
     // entries that both look right in the UI, and where speech will
     // arbitrarily always match one of them — confusing to debug later.
-    const existingSigns = await prisma.speechSign.findMany({
-      select: { id: true, word: true },
-    });
-    const duplicate = existingSigns.find((s) => isSameSignWord(s.word, word));
+    const duplicate = await findDuplicate(word);
     if (duplicate) {
       return res.status(409).json({
         error: `A sign for "${duplicate.word}" already exists — edit or delete it instead of adding a near-duplicate.`,
@@ -113,48 +389,24 @@ router.post(
     // student-facing Sign Library upload flow never sends this field,
     // so it always publishes immediately as previously agreed.
     const isPublished = req.body.publish !== "false";
-    const objectKey = `${SIGNS_PREFIX}${Date.now()}${path.extname(file.originalname)}`;
+    const fileType = normalizeMimeType(file.mimetype);
+    const objectKey = `${SIGNS_PREFIX}${randomUUID()}${MIME_EXTENSIONS[fileType]}`;
     try {
-      await putObject(PUBLIC_BUCKET, objectKey, file.buffer, file.mimetype);
+      await putObject(PUBLIC_BUCKET, objectKey, file.buffer, fileType);
     } catch (uploadError) {
       console.error("Storage upload error:", uploadError);
       return res.status(500).json({
         error: "Upload failed",
       });
     }
-    const publicUrl = publicObjectUrl(PUBLIC_BUCKET, objectKey);
-    const created = await prisma.speechSign.create({
-      data: {
-        word,
-        file: publicUrl,
-        type: file.mimetype,
-        isPublished,
-      },
-    });
-    await prisma.keyword.upsert({
-      where: {
-        language_keyword: {
-          language,
-          keyword: word,
-        },
-      },
-      update: {
-        value: word,
-      },
-      create: {
-        language,
-        keyword: word,
-        value: word,
-      },
-    });
-    res.json({
-      success: true,
-      id: created.id,
+    const saved = await saveUploadedSign(
       word,
-      file: publicUrl,
-      type: file.mimetype,
-      isPublished: created.isPublished,
-    });
+      language,
+      fileType,
+      objectKey,
+      isPublished,
+    );
+    res.json(saved);
   } catch (err) {
     console.error("Upload error:", err);
     res.status(500).json({

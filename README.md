@@ -1,66 +1,50 @@
 # Sign Language System
 
-A full-stack sign-language application with a React/Vite frontend, an Express API, and Prisma with SQLite.
+A sign-language application with a React/Vite frontend, an Express API, Prisma, Neon Postgres, and Neon Object Storage.
 
-## Run locally
+## Local development
 
 Requirements: Node.js 22 and npm.
 
-1. Copy `.env.example` to `.env` and `sign-language-server/.env.example` to `sign-language-server/.env`.
-2. Install both packages:
+1. Copy `.env.example` to `.env` and `sign-language-server/.env.example` to `sign-language-server/.env`. Use your own secrets and never commit real environment files.
+2. Install dependencies:
 
    ```sh
    npm ci
    npm ci --prefix sign-language-server
    ```
 
-3. In `sign-language-server/.env`, set `DATABASE_URL=file:./dev.db` and a private `JWT_SECRET`.
-4. Create/update the local SQLite schema and generate Prisma Client:
+3. Configure `DATABASE_URL` with the pooled Postgres connection string, `DATABASE_URL_UNPOOLED` with the direct connection string, and set a private `JWT_SECRET`.
+4. Apply migrations and start the frontend/API:
 
    ```sh
-   npm run prisma:generate --prefix sign-language-server
-   npm run db:push --prefix sign-language-server
-   ```
-
-5. Start the frontend and API:
-
-   ```sh
+   npm run db:migrate:deploy --prefix sign-language-server
    npm run dev
    ```
 
-The Vite development server runs on port 5173 and proxies API calls to the Express API on port 3001.
+The Vite development server runs on port 5173 and proxies API calls to the Express API on port 3001. Local file storage is used when S3-compatible storage variables are not configured.
 
-## Deploy the frontend to Vercel
+## Deploy to Vercel with Neon
 
-Vercel hosts the Vite frontend; keep the Express API and SQLite database on Railway. Vercel's function filesystem is ephemeral and should not be used for the SQLite database.
+The API is exposed as a Vercel Function at `api/[...path].ts`. Neon supplies Postgres and the S3-compatible buckets used for public sign assets and private hand crops.
 
-1. Import this GitHub repository into Vercel with the repository root as the project root. `vercel.json` sets the install command, build command, output directory, and SPA rewrite.
-2. Set `VITE_API_ROOT` in Vercel's project environment variables to the public Railway API origin, with no trailing slash, for example `https://your-api.up.railway.app`.
-3. If Google sign-in is enabled, set `VITE_GOOGLE_CLIENT_ID` in Vercel and add the Vercel domain to the OAuth client's authorized JavaScript origins.
-4. Update Railway's `CORS_ORIGIN` to the Vercel origin. For preview deployments, add each allowed origin as a comma-separated value.
-5. Redeploy the Vercel project after changing build-time variables.
+1. Import the repository into Vercel with the repository root as the project root. `vercel.json` configures installation, build, and the SPA rewrite.
+2. Set the Vercel environment variables from the linked Neon project: `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `STORAGE_PUBLIC_BUCKET`, and `STORAGE_PRIVATE_BUCKET`. Also set the app's `JWT_SECRET`, `CORS_ORIGIN`, and any optional Google/AI provider variables you use.
+3. Set `VITE_GOOGLE_CLIENT_ID` if Google sign-in is enabled and authorize the Vercel domain in the Google OAuth client. Set `VITE_API_ROOT` only if the API is hosted on a different origin; otherwise leave it unset.
+4. Apply production migrations using the direct Neon URL:
 
-## Deploy on Railway
-
-The repository is configured as one Railway service: the Dockerfile builds the frontend and API, and the API serves both. SQLite and uploaded files are stored on a Railway volume.
-
-1. Create a Railway project from this GitHub repository. Railway uses the root `railway.json` and `Dockerfile`.
-2. Add a volume to the service, mounted at `/data`.
-3. Set these service variables:
-
-   ```env
-   DATABASE_URL=file:/data/sign-language.db
-   UPLOAD_DIR=/data/public
-   JWT_SECRET=<a-long-random-secret>
-   CORS_ORIGIN=https://<your-railway-domain>
+   ```sh
+   npm run db:migrate:deploy --prefix sign-language-server
    ```
 
-   `DATABASE_URL` and `UPLOAD_DIR` must stay under the mounted volume. Leave `VITE_API_ROOT` unset so the frontend calls the API on the same origin. Set `GOOGLE_CLIENT_ID` and `VITE_GOOGLE_CLIENT_ID` if Google sign-in is enabled; `GROQ_API_KEY` is optional for AI features.
+5. Redeploy after setting or changing environment variables. Uploads use 3 MB chunks so they stay below Vercel Function request limits.
 
-The service applies the Prisma schema to the SQLite database when it starts and exposes `/health` for Railway health checks. The checked-in migration history is PostgreSQL-based, so this SQLite deployment uses `prisma db push` rather than `prisma migrate deploy`. A new Railway volume starts with an empty database; local database contents are not uploaded.
+For local commands with the linked Neon environment, run them through `neon-env run -- <command>` so the CLI injects the configured branch variables.
 
-Uploaded media also uses `/data`, so it persists across deploys. Without the volume, both the SQLite database and locally stored uploads would be ephemeral.
+## Deploy the API with Docker/Railway
 
-## Environment files
+The Dockerfile also runs the Express API as a Node service. Configure `DATABASE_URL` (pooled), `DATABASE_URL_UNPOOLED` (direct), `JWT_SECRET`, and `CORS_ORIGIN` in the hosting provider. Configure the Neon Object Storage variables above for persistent uploads; without them, local uploads use the container filesystem and are not persistent. The container applies Prisma migrations before starting.
 
-Use the two `.env.example` files as templates. Never commit actual `.env` files or database contents. Set `ADMIN_EMAIL` to your admin Gmail address and `ADMIN_PASSWORD` to a strong, unique password in Railway's service variables (or your local, untracked `.env` file); do not put the password in `.env.example` or commit it. The seed script requires `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `TEACHER_EMAIL`, and `TEACHER_PASSWORD`.
+## Admin credentials
+
+Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` as deployment environment variables, using a strong unique password. Never commit credentials or put them in a tracked example file.

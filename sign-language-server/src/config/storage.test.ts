@@ -58,6 +58,34 @@ test("keyFromUrl extracts a sign key from the configured Worker URL", () => {
   );
 });
 
+test("keyFromUrl extracts keys from the configured S3 endpoint", () => {
+  const previousEndpoint = process.env.AWS_ENDPOINT_URL_S3;
+  const previousPublicBaseUrl = process.env.PUBLIC_ASSETS_BASE_URL;
+  process.env.AWS_ENDPOINT_URL_S3 = "https://objects.example.test";
+  delete process.env.PUBLIC_ASSETS_BASE_URL;
+
+  try {
+    assert.equal(
+      keyFromUrl(
+        `https://objects.example.test/${PUBLIC_BUCKET}/signs/123.png?download=1`,
+        PUBLIC_BUCKET,
+      ),
+      "signs/123.png",
+    );
+  } finally {
+    if (previousEndpoint === undefined) {
+      delete process.env.AWS_ENDPOINT_URL_S3;
+    } else {
+      process.env.AWS_ENDPOINT_URL_S3 = previousEndpoint;
+    }
+    if (previousPublicBaseUrl === undefined) {
+      delete process.env.PUBLIC_ASSETS_BASE_URL;
+    } else {
+      process.env.PUBLIC_ASSETS_BASE_URL = previousPublicBaseUrl;
+    }
+  }
+});
+
 test("keyFromUrl rejects an unrelated Worker URL", () => {
   process.env.PUBLIC_ASSETS_BASE_URL = workerBaseUrl;
 
