@@ -1,6 +1,6 @@
 // src/components/Gesture/SpeechGesture.tsx
 import React, { useState, useRef, useEffect } from "react";
-import { API_ROOT } from "../../config";
+import { API_ROOT, resolveApiUrl } from "../../config";
 import { authHeaders } from "../../services/api";
 import { useToast } from "../../contexts/ToastContext";
 interface SpeechGestureProps {
@@ -868,9 +868,7 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
           if (cancelled) return;
           const updated = data.map((item: any) => ({
             ...item,
-            file: item.file.startsWith("http")
-              ? item.file
-              : API_ROOT + item.file,
+            file: resolveApiUrl(item.file),
           }));
           dynamicAssetsRef.current = updated;
           setDynamicAssets(updated);

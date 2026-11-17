@@ -30,6 +30,16 @@ Requirements: Node.js 22 and npm.
 
 The Vite development server runs on port 5173 and proxies API calls to the Express API on port 3001.
 
+## Deploy the frontend to Vercel
+
+Vercel hosts the Vite frontend; keep the Express API and SQLite database on Railway. Vercel's function filesystem is ephemeral and should not be used for the SQLite database.
+
+1. Import this GitHub repository into Vercel with the repository root as the project root. `vercel.json` sets the install command, build command, output directory, and SPA rewrite.
+2. Set `VITE_API_ROOT` in Vercel's project environment variables to the public Railway API origin, with no trailing slash, for example `https://your-api.up.railway.app`.
+3. If Google sign-in is enabled, set `VITE_GOOGLE_CLIENT_ID` in Vercel and add the Vercel domain to the OAuth client's authorized JavaScript origins.
+4. Update Railway's `CORS_ORIGIN` to the Vercel origin. For preview deployments, add each allowed origin as a comma-separated value.
+5. Redeploy the Vercel project after changing build-time variables.
+
 ## Deploy on Railway
 
 The repository is configured as one Railway service: the Dockerfile builds the frontend and API, and the API serves both. SQLite and uploaded files are stored on a Railway volume.

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import AdminSignRecorder, { RECOMMENDED_RECORDINGS } from "./AdminSignRecorder";
 import TeacherInvites from "./TeacherInvites";
 import AppButton from "../ui/AppButton";
-import { API_ROOT } from "../../config";
+import { API_ROOT, resolveApiUrl } from "../../config";
 import { authHeaders } from "../../services/api";
 import { useAuth } from "../../contexts/AuthContext";
 import {
@@ -136,7 +136,7 @@ const AdminSigns = () => {
         };
         const updatedData: Sign[] = data.map((item: Sign) => ({
           ...item,
-          file: item.file.startsWith("http") ? item.file : API_ROOT + item.file,
+          file: resolveApiUrl(item.file),
         }));
         setAssets(updatedData);
       })
@@ -178,9 +178,7 @@ const AdminSigns = () => {
         id: data.id,
         word: data.word,
         type: data.type,
-        file: data.file.startsWith("http")
-          ? data.file
-          : `${API_ROOT}${data.file}`,
+        file: resolveApiUrl(data.file),
         isPublished: data.isPublished,
       };
       const updated = [...assets, newAsset];
@@ -592,7 +590,7 @@ const AdminSigns = () => {
             >
               {entry.handCropUrl ? (
                 <img
-                  src={entry.handCropUrl}
+                  src={resolveApiUrl(entry.handCropUrl)}
                   alt={entry.word}
                   loading="lazy"
                   decoding="async"

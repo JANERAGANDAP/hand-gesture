@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { apiClient, authHeaders } from "../../services/api";
-import { API_ROOT } from "../../config";
+import { API_ROOT, resolveApiUrl } from "../../config";
 import type { SignAsset } from "./types";
 
 const ADD_LANGUAGES = ["English", "Cebuano", "Tagalog", "Ilocano", "Bikolano"];
@@ -597,7 +597,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                     >
                       {asset.type?.startsWith("video/") ? (
                         <video
-                          src={asset.file}
+                          src={resolveApiUrl(asset.file)}
                           controls
                           muted
                           playsInline
@@ -606,7 +606,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                         />
                       ) : (
                         <img
-                          src={asset.file}
+                          src={resolveApiUrl(asset.file)}
                           alt={asset.word}
                           loading="lazy"
                           decoding="async"
