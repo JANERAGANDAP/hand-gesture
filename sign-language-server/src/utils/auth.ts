@@ -8,11 +8,10 @@ const JWT_EXPIRES_IN = "7d";
 
 export type AppRole = "ADMIN" | "TEACHER" | "STUDENT";
 
-// Admin is intentionally NOT a database row — it's a constant credential
-// pair from the environment, per the "admin has fixed credentials" requirement.
+// Admin credentials must be explicitly configured in the environment.
 export const ADMIN_CREDENTIALS = {
-  email: (process.env.ADMIN_EMAIL || "admin@signlang.local").toLowerCase(),
-  password: process.env.ADMIN_PASSWORD || "Admin@12345",
+  email: (process.env.ADMIN_EMAIL || "").trim().toLowerCase(),
+  password: process.env.ADMIN_PASSWORD || "",
 };
 
 export interface AuthTokenPayload {

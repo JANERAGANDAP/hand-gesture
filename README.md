@@ -63,4 +63,4 @@ Uploaded media also uses `/data`, so it persists across deploys. Without the vol
 
 ## Environment files
 
-Use the two `.env.example` files as templates. Never commit actual `.env` files or database contents. The seed script requires `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `TEACHER_EMAIL`, and `TEACHER_PASSWORD`.
+Use the two `.env.example` files as templates. Never commit actual `.env` files or database contents. Set `ADMIN_EMAIL` to your admin Gmail address and `ADMIN_PASSWORD` to a strong, unique password in Railway's service variables (or your local, untracked `.env` file); do not put the password in `.env.example` or commit it. The seed script requires `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `TEACHER_EMAIL`, and `TEACHER_PASSWORD`.

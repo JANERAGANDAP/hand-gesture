@@ -138,6 +138,8 @@ router.post("/login", async (req, res) => {
     const normalizedEmail = String(email).trim().toLowerCase();
 
     if (
+      ADMIN_CREDENTIALS.email &&
+      ADMIN_CREDENTIALS.password &&
       normalizedEmail === ADMIN_CREDENTIALS.email &&
       password === ADMIN_CREDENTIALS.password
     ) {
