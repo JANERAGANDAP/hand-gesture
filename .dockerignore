@@ -1,0 +1,14 @@
+.git
+**/node_modules
+**/dist
+dist
+dev-dist
+**/.env
+**/.env.*
+!**/.env.example
+**/*.db
+**/*.db-journal
+sign-language-server/uploads
+sign-language-server/public/hand-crops
+sign-language-server/public/signs/*
+!sign-language-server/public/signs/hello.png

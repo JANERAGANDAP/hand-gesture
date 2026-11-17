@@ -23,6 +23,32 @@ test("publicObjectUrl builds a Cloudflare Worker URL for public assets", () => {
   );
 });
 
+test("publicObjectUrl builds a bucket-prefixed local URL without a CDN base", () => {
+  delete process.env.PUBLIC_ASSETS_BASE_URL;
+
+  assert.equal(
+    publicObjectUrl(PUBLIC_BUCKET, "signs/1.mp4"),
+    `/public/${PUBLIC_BUCKET}/signs/1.mp4`,
+  );
+});
+
+test("local public URLs resolve to keys without the bucket prefix", () => {
+  delete process.env.PUBLIC_ASSETS_BASE_URL;
+
+  assert.equal(
+    keyFromUrl(`/public/${PUBLIC_BUCKET}/signs/1.mp4`, PUBLIC_BUCKET),
+    "signs/1.mp4",
+  );
+  assert.equal(
+    keyFromUrl("/public/hand-crops/abc.jpg", PRIVATE_BUCKET),
+    "abc.jpg",
+  );
+  assert.equal(
+    keyFromUrl("/public/signs/legacy.mp4", PUBLIC_BUCKET),
+    "signs/legacy.mp4",
+  );
+});
+
 test("keyFromUrl extracts a sign key from the configured Worker URL", () => {
   process.env.PUBLIC_ASSETS_BASE_URL = workerBaseUrl;
 

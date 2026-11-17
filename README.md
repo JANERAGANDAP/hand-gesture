@@ -1,193 +1,56 @@
 # Sign Language System
 
-A full-stack sign language application that uses **PostgreSQL** for database management, **Prisma** as the ORM, and **Ollama** for accessing local AI models.
+A full-stack sign-language application with a React/Vite frontend, an Express API, and Prisma with SQLite.
 
-## Project Structure
+## Run locally
 
-```text
-project-root/
-│
-├── server/                 # API server for Ollama local model access
-│
-├── sign-language-server/   # Main backend application
-│   ├── prisma/             # Prisma schema and migrations
-│   └── ...
-│
-└── ...
-```
+Requirements: Node.js 22 and npm.
 
-### Components
+1. Copy `.env.example` to `.env` and `sign-language-server/.env.example` to `sign-language-server/.env`.
+2. Install both packages:
 
-* **PostgreSQL** – Primary database used by the system.
-* **Prisma** – ORM used for database operations. Prisma configuration and schema files are located in the `sign-language-server` directory.
-* **server/** – Handles communication with Ollama and provides access to locally hosted AI models.
-* **sign-language-server/** – Main backend service containing application logic and database integration.
+   ```sh
+   npm ci
+   npm ci --prefix sign-language-server
+   ```
 
----
+3. In `sign-language-server/.env`, set `DATABASE_URL=file:./dev.db` and a private `JWT_SECRET`.
+4. Create/update the local SQLite schema and generate Prisma Client:
 
-## Prerequisites
+   ```sh
+   npm run prisma:generate --prefix sign-language-server
+   npm run db:push --prefix sign-language-server
+   ```
 
-Before running the system, ensure the following are installed:
+5. Start the frontend and API:
 
-* [Node.js](https://nodejs.org/) (recommended latest LTS version)
-* PostgreSQL
-* Ollama
-* npm (included with Node.js)
+   ```sh
+   npm run dev
+   ```
 
-Additionally, make sure all required project dependencies are installed.
+The Vite development server runs on port 5173 and proxies API calls to the Express API on port 3001.
 
----
+## Deploy on Railway
 
-## Installation
+The repository is configured as one Railway service: the Dockerfile builds the frontend and API, and the API serves both. SQLite and uploaded files are stored on a Railway volume.
 
-### 1. Clone the Repository
+1. Create a Railway project from this GitHub repository. Railway uses the root `railway.json` and `Dockerfile`.
+2. Add a volume to the service, mounted at `/data`.
+3. Set these service variables:
 
-```bash
-git clone <repository-url>
-cd <repository-name>
-```
+   ```env
+   DATABASE_URL=file:/data/sign-language.db
+   UPLOAD_DIR=/data/public
+   JWT_SECRET=<a-long-random-secret>
+   CORS_ORIGIN=https://<your-railway-domain>
+   ```
 
-### 2. Install Dependencies
+   `DATABASE_URL` and `UPLOAD_DIR` must stay under the mounted volume. Leave `VITE_API_ROOT` unset so the frontend calls the API on the same origin. Set `GOOGLE_CLIENT_ID` and `VITE_GOOGLE_CLIENT_ID` if Google sign-in is enabled; `GROQ_API_KEY` is optional for AI features.
 
-Install all required libraries and packages before running the application:
+The service applies the Prisma schema to the SQLite database when it starts and exposes `/health` for Railway health checks. The checked-in migration history is PostgreSQL-based, so this SQLite deployment uses `prisma db push` rather than `prisma migrate deploy`. A new Railway volume starts with an empty database; local database contents are not uploaded.
 
-```bash
-npm install
-```
+Uploaded media also uses `/data`, so it persists across deploys. Without the volume, both the SQLite database and locally stored uploads would be ephemeral.
 
-If the project contains multiple packages/workspaces, install dependencies in the relevant directories as needed.
+## Environment files
 
----
-
-## Database Setup
-
-### Configure PostgreSQL
-
-Create a PostgreSQL database and update the environment variables with your database connection string.
-
-Example:
-
-```env
-DATABASE_URL="postgresql://username:password@localhost:5432/database_name"
-```
-
-### Prisma Setup
-
-Prisma is located in:
-
-```text
-sign-language-server/prisma
-```
-
-Run migrations:
-
-```bash
-cd sign-language-server
-npx prisma migrate deploy
-```
-
-Or for development:
-
-```bash
-npx prisma migrate dev
-```
-
-Generate the Prisma client:
-
-```bash
-npx prisma generate
-```
-
----
-
-## Ollama Setup
-
-Make sure Ollama is installed and running locally.
-
-Pull the required model:
-
-```bash
-ollama pull <model-name>
-```
-
-Verify that the model is available:
-
-```bash
-ollama list
-```
-
----
-
-## Running the Application
-
-After installing all dependencies, configuring PostgreSQL, and ensuring Ollama is running, start the system with:
-
-```bash
-npm run dev
-```
-
-This command automatically starts:
-
-* The **server** folder (Ollama API integration)
-* The **sign-language-server** backend service
-
-No need to start these services separately when using the development command.
-
----
-
-## Notes
-
-* Ensure PostgreSQL is running before starting the application.
-* Ensure Ollama is running and the required model has been downloaded.
-* Install all project dependencies before executing `npm run dev`.
-* Prisma files and database configurations are located in the `sign-language-server` directory.
-* The application may fail to start if any required libraries or services are missing.
-
----
-
-## Development Workflow
-
-```bash
-# Install dependencies
-npm install
-
-# Setup database
-cd sign-language-server
-npx prisma generate
-npx prisma migrate dev
-
-# Return to project root
-cd ..
-
-# Start the application
-npm run dev
-```
-
-## Troubleshooting
-
-### Database Connection Errors
-
-* Verify PostgreSQL is running.
-* Check the `DATABASE_URL` configuration.
-* Ensure database migrations have been applied.
-
-### Prisma Errors
-
-```bash
-cd sign-language-server
-npx prisma generate
-```
-
-Then restart the application.
-
-### Ollama Connection Issues
-
-* Verify Ollama is running locally.
-* Confirm the required model has been downloaded.
-* Check that the `server` service can access the Ollama endpoint.
-
----
-
-## License
-
-This project is licensed under the license specified in this repository.
+Use the two `.env.example` files as templates. Never commit actual `.env` files or database contents. The seed script requires `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `TEACHER_EMAIL`, and `TEACHER_PASSWORD`.

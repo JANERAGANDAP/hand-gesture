@@ -34,6 +34,7 @@ server/.env
 # Local database and uploaded runtime data
 *.db
 *.db-journal
+sign-language-server/uploads/
 sign-language-server/public/hand-crops/
 sign-language-server/public/signs/*
 !sign-language-server/public/signs/hello.png

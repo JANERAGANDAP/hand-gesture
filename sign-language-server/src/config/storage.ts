@@ -9,8 +9,10 @@ export const PRIVATE_BUCKET = process.env.STORAGE_PRIVATE_BUCKET || "hand-crops"
 export const SIGNS_PREFIX = "signs/";
 export const SIGNED_URL_TTL_SECONDS = 3600;
 
-// Local storage directory — files served from /public by the server
-const UPLOAD_DIR = path.resolve(process.cwd(), "public");
+// Local storage directory — files served from /public by the server.
+export const UPLOAD_DIR = path.resolve(
+  process.env.UPLOAD_DIR || path.join(process.cwd(), "public"),
+);
 
 function bucketDir(bucket: string): string {
   return path.join(UPLOAD_DIR, bucket);
@@ -78,15 +80,50 @@ export async function listObjectSizes(bucket: string): Promise<Map<string, numbe
 }
 
 // Build a public URL for a stored file
-export function publicObjectUrl(_bucket: string, key: string): string {
-  // Served from http://localhost:3001/public/<key>
-  return `/public/${key}`;
+export function publicObjectUrl(bucket: string, key: string): string {
+  const publicAssetsBaseUrl =
+    bucket === PUBLIC_BUCKET
+      ? process.env.PUBLIC_ASSETS_BASE_URL?.replace(/\/+$/, "")
+      : undefined;
+  return publicAssetsBaseUrl
+    ? `${publicAssetsBaseUrl}/${key}`
+    : `/public/${bucket}/${key}`;
 }
 
 // Extract key from URL
-export function keyFromUrl(url: string, _bucket: string): string | null {
+export function keyFromUrl(url: string, bucket: string): string | null {
   if (!url) return null;
-  if (url.startsWith("/public/")) return url.slice("/public/".length);
+
+  const cleanUrl = url.split(/[?#]/, 1)[0];
+  const publicAssetsBaseUrl =
+    bucket === PUBLIC_BUCKET
+      ? process.env.PUBLIC_ASSETS_BASE_URL?.replace(/\/+$/, "")
+      : undefined;
+
+  if (publicAssetsBaseUrl && cleanUrl.startsWith(`${publicAssetsBaseUrl}/`)) {
+    return cleanUrl.slice(publicAssetsBaseUrl.length + 1);
+  }
+
+  if (cleanUrl.startsWith("/public/")) {
+    const localPath = cleanUrl.slice("/public/".length);
+    const bucketPrefix = `${bucket}/`;
+    return localPath.startsWith(bucketPrefix)
+      ? localPath.slice(bucketPrefix.length)
+      : localPath;
+  }
+
+  const supabasePrefix = `/storage/v1/object/public/${bucket}/`;
+  const supabaseIndex = cleanUrl.indexOf(supabasePrefix);
+  if (supabaseIndex !== -1) {
+    return cleanUrl.slice(supabaseIndex + supabasePrefix.length);
+  }
+
+  const neonPrefix = `/${bucket}/`;
+  const neonIndex = cleanUrl.indexOf(neonPrefix);
+  if (cleanUrl.includes(".storage.neon.tech/") && neonIndex !== -1) {
+    return cleanUrl.slice(neonIndex + neonPrefix.length);
+  }
+
   return null;
 }
 
