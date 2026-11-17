@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model SignGesture {
+  id           Int      @id @default(autoincrement())
+  word         String
+  language     String   @default("FSL")
+  gestureType  String   @default("dynamic")
+  features     String   // SQLite: store as JSON string
+  sequence     String?  // SQLite: store as JSON string
+  frameCount   Int      @default(0)
+  handCropUrl  String?
+  description  String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([word])
+  @@index([language])
+  @@index([gestureType])
+  @@index([isActive])
+}
+
+model SpeechSign {
+  id          Int      @id @default(autoincrement())
+  word        String
+  file        String
+  type        String
+  isPublished Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([word])
+}
+
+model Keyword {
+  id        Int      @id @default(autoincrement())
+  language  String
+  keyword   String
+  value     String
+  createdAt DateTime @default(now())
+
+  @@unique([language, keyword])
+}
+
+model AISentenceHistory {
+  id               Int      @id @default(autoincrement())
+  language         String   @default("FSL")
+  rawGestureInput  String
+  composedSentence String
+  normalizedInput  String?
+  createdAt        DateTime @default(now())
+
+  @@index([language])
+}
+
+model ModelTraining {
+  id               Int      @id @default(autoincrement())
+  modelName        String
+  version          String
+  accuracy         Float?
+  precision        Float?
+  recall           Float?
+  f1Score          Float?
+  trainingSamples  Int      @default(0)
+  createdAt        DateTime @default(now())
+}
+
+model RecognitionLog {
+  id               Int      @id @default(autoincrement())
+  predictedWord    String?
+  confidence       Float?
+  features         String?  // SQLite: store as JSON string
+  createdAt        DateTime @default(now())
+
+  @@index([predictedWord])
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  name       String
+  email      String   @unique
+  password   String?
+  googleId   String?  @unique
+  role       String   @default("STUDENT")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([role])
+}
+
+model TeacherInvite {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  invitedBy String?
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+}

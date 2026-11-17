@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+dev-dist
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables - NEVER commit to GitHub
+.env
+.env.local
+.env.*.local
+sign-language-server/.env
+server/.env
+
+# Local database and uploaded runtime data
+*.db
+*.db-journal
+sign-language-server/public/hand-crops/
+sign-language-server/public/signs/*
+!sign-language-server/public/signs/hello.png
+
+# YOLO hand-detection weights (produced locally via yolo-training/, see
+# public/models/yolo-hand/README.md) - not committed, same as the CNN's
+# sign-language-server/models/hand-shape-cnn/.
+public/models/yolo-hand/model.json
+public/models/yolo-hand/*.bin
+.neon
+
+supabase-files/
+supabase_public.dump
+*.supabase.bak

@@ -1,0 +1,290 @@
+// src/components/Gesture/GestureDisplay.tsx
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import { API_ROOT } from "../../config";
+import { authHeaders } from "../../services/api";
+import Sidebar from "./Sidebar";
+import TopNavbar from "./TopNavbar";
+import VideoViewport from "./VideoViewport";
+import TranscriptionCard from "./TranscriptionCard";
+import HistoryModal from "./HistoryModal";
+import SignLibraryModal from "./SignLibraryModal";
+import SpeechGesture from "./SpeechGesture";
+import SignGuidePanel from "./SignGuidePanel";
+import { useAuth } from "../../contexts/AuthContext";
+import { useToast } from "../../contexts/ToastContext";
+import { translateText } from "../../services/api";
+import { warmRecognition } from "../../services/recognitionApi";
+import type { HistoryEntry } from "./types";
+type Language = "English" | "Cebuano" | "Tagalog" | "Ilocano" | "Bikolano";
+type Mode = "gesture" | "speech";
+const GestureDisplay: React.FC = () => {
+  const [activeLang, setActiveLang] = useState<Language>("English");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [signLibraryVersion, setSignLibraryVersion] = useState(0);
+  const [mode, setMode] = useState<Mode>("gesture");
+  const [gestureText, setGestureText] = useState("");
+  const [speechText, setSpeechText] = useState("");
+  const [translatedText, setTranslatedText] = useState("");
+  const [guideOpen, setGuideOpen] = useState(true);
+  const { showToast } = useToast();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const translationRequestIdRef = useRef(0);
+  const isLoggedIn = Boolean(user);
+  // Warm the backend (server, database, gesture cache) once the user is
+  // signed in, so the first recognition does not pay the cold-start cost.
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    void warmRecognition();
+  }, [isLoggedIn]);
+  const languages = [
+    {
+      id: "English",
+      color: "#3b82f6",
+    },
+    {
+      id: "Cebuano",
+      color: "#f59e0b",
+    },
+    {
+      id: "Tagalog",
+      color: "#ef4444",
+    },
+    {
+      id: "Ilocano",
+      color: "#10b981",
+    },
+    {
+      id: "Bikolano",
+      color: "#8b5cf6",
+    },
+  ];
+  const addHistory = (
+    text: string,
+    language: string,
+    source: "gesture" | "speech",
+  ) => {
+    const now = new Date();
+    const time = now.toLocaleTimeString("en-PH", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    setHistory((prev) => [
+      {
+        id: Date.now(),
+        gesture: text,
+        language,
+        time,
+        source,
+      },
+      ...prev,
+    ]);
+  };
+  const loadHistory = async () => {
+    try {
+      const res = await fetch(`${API_ROOT}/ai-history/get-history`, {
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      const entries: HistoryEntry[] = data.map((entry: any) => ({
+        id: entry.id,
+        gesture: entry.rawGestureInput,
+        language: entry.language,
+        time: new Date(entry.createdAt).toLocaleTimeString("en-PH", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+        source: "gesture",
+      }));
+      setHistory(entries);
+    } catch (err) {
+      console.error("Failed to load history:", err);
+      showToast("Failed to load history", "error");
+    }
+  };
+  const handleTextTranslation = async (
+    text: string,
+    sourceLanguage: string,
+    targetLanguage: string,
+  ) => {
+    const requestId = ++translationRequestIdRef.current;
+    if (!text?.trim()) {
+      setTranslatedText("");
+      return;
+    }
+    try {
+      const result = await translateText(text, sourceLanguage, targetLanguage);
+      if (requestId !== translationRequestIdRef.current) return;
+      setTranslatedText(result.translatedText || text);
+    } catch (err) {
+      console.error(err);
+      if (requestId !== translationRequestIdRef.current) return;
+      setTranslatedText(text);
+    }
+  };
+  useEffect(() => {
+    loadHistory();
+  }, []);
+  useEffect(() => {
+    if (mode === "gesture") {
+      setSpeechText("");
+    } else {
+      setGestureText("");
+    }
+    setTranslatedText("");
+  }, [mode]);
+  const handleModeSwitch = (newMode: Mode) => {
+    if (newMode === "speech" && isCapturing) {
+      setIsCapturing(false);
+    }
+    // Library is only ever opened from the Speech side (see TopNavbar) —
+    // if it's open and the user switches to Gesture underneath it, close
+    // it rather than leaving it open in a mode it's no longer meant for.
+    if (newMode === "gesture" && showLibrary) {
+      setShowLibrary(false);
+    }
+    setMode(newMode);
+  };
+  const handleGestureDetected = useCallback(
+    async (sentence: string, lang: string) => {
+      const rawSentence = sentence.trim();
+      if (!rawSentence) return;
+      setGestureText(rawSentence);
+      setTranslatedText("");
+      addHistory(rawSentence, lang, "gesture");
+      void handleTextTranslation(rawSentence, "English", activeLang);
+    },
+    [activeLang],
+  );
+  const handleSpeechDetected = async (text: string) => {
+    setSpeechText(text);
+    setTranslatedText("");
+    addHistory(text, activeLang, "speech");
+    void handleTextTranslation(text, "English", activeLang);
+  };
+  return (
+    <div style={styles.page}>
+      <div style={styles.mainContainer}>
+        <Sidebar
+          languages={languages}
+          activeLang={activeLang}
+          setActiveLang={(lang) => setActiveLang(lang as Language)}
+          sidebarOpen={sidebarOpen}
+          toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+        />
+
+        <main style={styles.mainContent}>
+          <TopNavbar
+            activeLang={activeLang}
+            sidebarOpen={sidebarOpen}
+            toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+            isCapturing={isCapturing}
+            onToggleCapture={() => setIsCapturing((p) => !p)}
+            onShowHistory={() => setShowHistory(true)}
+            onShowLibrary={() => setShowLibrary(true)}
+            mode={mode}
+            onModeChange={handleModeSwitch}
+            userName={user?.name}
+            userRole={user?.role}
+            onManageSigns={() => navigate("/admin-signs")}
+            onLogout={() => {
+              logout();
+              navigate("/login", { replace: true });
+            }}
+          />
+
+          <div style={styles.contentArea}>
+            {mode === "gesture" ? (
+              <>
+                <VideoViewport
+                  language={activeLang}
+                  isCapturing={isCapturing}
+                  onGestureDetected={handleGestureDetected}
+                />
+
+                <TranscriptionCard
+                  text={gestureText}
+                  translatedText={translatedText}
+                  mode="gesture"
+                />
+              </>
+            ) : (
+              <>
+                <SpeechGesture
+                  language={activeLang}
+                  onSpeechDetected={handleSpeechDetected}
+                  refreshSignsVersion={signLibraryVersion}
+                />
+
+                <TranscriptionCard
+                  text={speechText}
+                  translatedText={translatedText}
+                  mode="speech"
+                />
+              </>
+            )}
+          </div>
+        </main>
+
+        {/* Sign Guide Panel — right side */}
+        <SignGuidePanel
+          isOpen={guideOpen}
+          onToggle={() => setGuideOpen((o) => !o)}
+        />
+      </div>
+
+      {showHistory && (
+        <HistoryModal
+          history={history}
+          onClose={() => setShowHistory(false)}
+          onClear={() => setHistory([])}
+        />
+      )}
+
+      {showLibrary && (
+        <SignLibraryModal
+          onClose={() => setShowLibrary(false)}
+          mode={mode}
+          language={activeLang}
+          onSignAdded={() => setSignLibraryVersion((v) => v + 1)}
+        />
+      )}
+    </div>
+  );
+};
+const styles = {
+  page: {
+    minHeight: "100vh",
+    background: "var(--pearl-bg, #f6f3ee)",
+    color: "var(--pearl-text, #1f2937)",
+    fontFamily: "'Segoe UI', system-ui, sans-serif",
+  } as React.CSSProperties,
+  mainContainer: {
+    display: "flex",
+    flexDirection: "row" as const,
+    minHeight: "100vh",
+  } as React.CSSProperties,
+  mainContent: {
+    flex: 1,
+    padding: "24px",
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0, // prevent flex overflow
+  } as React.CSSProperties,
+  contentArea: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "24px",
+  } as React.CSSProperties,
+};
+export default GestureDisplay;

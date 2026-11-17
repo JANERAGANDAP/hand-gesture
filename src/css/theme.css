@@ -1,0 +1,154 @@
+/*
+  Pearl theme — applied globally (body background + button highlighting)
+  and used by every screen, including the student-facing recognition screen
+  (Sidebar/TopNavbar/VideoViewport), which was previously its own dark theme
+  written directly in inline styles (GestureDisplay.css was never actually
+  imported, so it had no real effect — the dark look came from inline
+  styles and Bootstrap dark-utility classes in the components themselves).
+*/
+
+:root {
+  --pearl-bg: #f6f3ee;
+  --pearl-surface: #ffffff;
+  --pearl-surface-muted: #fbf9f5;
+  --pearl-border: rgba(15, 23, 42, 0.09);
+  --pearl-text: #1f2937;
+  --pearl-text-muted: #6b7280;
+  --pearl-accent: #3b82f6;
+  --pearl-accent-hover: #2563eb;
+  --pearl-danger: #ef4444;
+  --pearl-danger-hover: #dc2626;
+  --pearl-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+
+  /* Soft pastel palette for the recognition screen's mode toggle and
+     camera controls — distinct from the saturated blue used for login/admin
+     actions, so the two most "playful" surfaces in the app (mode switch,
+     record button) read as approachable rather than corporate. */
+  --pastel-periwinkle: #a9c1f2;
+  --pastel-periwinkle-deep: #7fa0e8;
+  --pastel-lavender: #d3c2f7;
+  --pastel-lavender-deep: #b79cee;
+  --pastel-mint: #9bd8bd;
+  --pastel-mint-deep: #6fc09e;
+  --pastel-coral: #f3b3ae;
+  --pastel-coral-deep: #ea8f88;
+  --pastel-text-on-pastel: #1f2937;
+}
+
+body {
+  background-color: var(--pearl-bg);
+}
+
+/* Every plain <button> in the app gets a visible, consistent highlight —
+   hover lift, active press, and a focus ring for keyboard users — even
+   ones not yet migrated to AppButton. */
+button {
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    filter 0.15s ease;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+button:not(:disabled):active {
+  transform: translateY(0);
+  filter: brightness(0.97);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.45);
+}
+
+/* AppButton variants */
+.app-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.app-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.app-btn--primary {
+  background: var(--pearl-accent);
+  color: #ffffff;
+  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.25);
+}
+
+.app-btn--primary:not(:disabled):hover {
+  background: var(--pearl-accent-hover);
+}
+
+.app-btn--danger {
+  background: var(--pearl-danger);
+  color: #ffffff;
+  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.22);
+}
+
+.app-btn--danger:not(:disabled):hover {
+  background: var(--pearl-danger-hover);
+}
+
+.app-btn--ghost {
+  background: var(--pearl-surface-muted);
+  color: var(--pearl-text);
+  border: 1px solid var(--pearl-border);
+}
+
+.app-btn--outline {
+  background: transparent;
+  color: var(--pearl-accent);
+  border: 1px solid var(--pearl-accent);
+}
+
+.app-btn--google {
+  background: #ffffff;
+  color: #3c4043;
+  border: 1px solid var(--pearl-border);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+/* Shared surfaces for the pearl-themed pages */
+.pearl-page {
+  min-height: 100vh;
+  background: var(--pearl-bg);
+  color: var(--pearl-text);
+  font-family: "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
+}
+
+.pearl-card {
+  background: var(--pearl-surface);
+  border: 1px solid var(--pearl-border);
+  border-radius: 16px;
+  box-shadow: var(--pearl-shadow);
+}
+
+.pearl-input {
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--pearl-border);
+  background: var(--pearl-surface-muted);
+  color: var(--pearl-text);
+  outline: none;
+  font-size: 14px;
+  width: 100%;
+}
+
+.pearl-input:focus {
+  border-color: var(--pearl-accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
