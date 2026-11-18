@@ -33,7 +33,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
   return (
     <header className="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
       {}
-      <div className="d-flex align-items-center w-100 w-md-auto justify-content-between justify-content-md-start">
+      <div className="d-flex align-items-center justify-content-between justify-content-md-start">
         <div className="d-flex align-items-center">
           <button
             type="button"
@@ -97,8 +97,13 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
 
       {}
       <div
-        className="d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center w-100 w-md-auto"
-        style={{ gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}
+        className="d-flex align-items-center"
+        style={{
+          gap: 8,
+          flexWrap: "wrap",
+          justifyContent: "flex-end",
+          maxWidth: "100%",
+        }}
       >
         {}
         <div
@@ -163,7 +168,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
 
         {mode === "speech" && (
           <button
-            className="btn w-100 w-sm-auto"
+            className="btn"
             onClick={onShowLibrary}
             style={{
               background: "var(--pearl-surface-muted, #fbf9f5)",
@@ -182,7 +187,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
 
         {}
         <button
-          className="btn w-100 w-sm-auto"
+          className="btn"
           onClick={onShowHistory}
           style={{
             background: "var(--pearl-surface-muted, #fbf9f5)",
@@ -201,7 +206,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
         {}
         {userRole && userRole !== "STUDENT" && onManageSigns && (
           <button
-            className="btn w-100 w-sm-auto"
+            className="btn"
             onClick={onManageSigns}
             style={{
               background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
@@ -221,7 +226,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
         )}
 
         <button
-          className="btn w-100 w-sm-auto"
+          className="btn"
           onClick={onLogout}
           title={userName ? `Signed in as ${userName}` : undefined}
           style={{
@@ -242,7 +247,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
         {mode === "gesture" && (
           <button
             onClick={onToggleCapture}
-            className="btn w-100 w-sm-auto"
+            className="btn"
             style={{
               minWidth: "170px",
               minHeight: 50,

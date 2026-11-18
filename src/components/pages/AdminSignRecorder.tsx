@@ -27,6 +27,7 @@ import {
   resolveHandBox,
   preloadYoloHandDetector,
 } from "../../utils/yoloHandDetector";
+import { loadHolisticScript } from "../../utils/holisticLoader";
 declare const Holistic: any;
 declare const Camera: any;
 const RECORD_FRAMES = 30;
@@ -277,6 +278,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
           alert("Couldn't read this video, or it's too short.");
           return;
         }
+        await loadHolisticScript();
         holistic = new Holistic({
           locateFile: (f: string) =>
             `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${f.replace(/^\/+/, "")}`,
@@ -557,20 +559,25 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
     const ctx = canvas.getContext("2d");
     let stopped = false;
     let camera: any = null;
+    let holistic: any = null;
     // Kick off the YOLO model fetch in parallel with Holistic init (no-op
     // if YOLO_HAND_DETECTOR_CONFIG.ENABLED is false).
     preloadYoloHandDetector();
-    const holistic = new Holistic({
-      locateFile: (file: string) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file.replace(/^\/+/, "")}`,
-    });
-    holistic.setOptions({
-      modelComplexity: 0,
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
-    holistic.onResults(async (results: any) => {
+    const initializeCamera = async () => {
+      try {
+        await loadHolisticScript();
+        if (stopped) return;
+        holistic = new Holistic({
+          locateFile: (file: string) =>
+            `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file.replace(/^\/+/, "")}`,
+        });
+        holistic.setOptions({
+          modelComplexity: 0,
+          smoothLandmarks: true,
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+        holistic.onResults(async (results: any) => {
       if (stopped) return;
       try {
         if (ctx) {
@@ -753,28 +760,34 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
       } catch (err) {
         console.error("Error in holistic results:", err);
       }
-    });
-    camera = new Camera(video, {
-      onFrame: async () => {
-        if (stopped || holisticClosedRef.current) return;
-        try {
-          await holistic.send({
-            image: video,
-          });
-        } catch (err) {
-          console.warn("Holistic send failed", err);
-        }
-      },
-      width: 640,
-      height: 480,
-      selfieMode: true,
-    });
-    camera.start();
+        });
+        camera = new Camera(video, {
+          onFrame: async () => {
+            if (stopped || holisticClosedRef.current) return;
+            try {
+              await holistic.send({
+                image: video,
+              });
+            } catch (err) {
+              console.warn("Holistic send failed", err);
+            }
+          },
+          width: 640,
+          height: 480,
+          selfieMode: true,
+        });
+        await camera.start();
+      } catch (error) {
+        console.error("Could not initialize the admin recording camera:", error);
+        updateLabel("Camera model failed to load — please retry");
+      }
+    };
+    void initializeCamera();
     return () => {
       stopped = true;
       camera?.stop();
       holisticClosedRef.current = true;
-      holistic.close();
+      holistic?.close();
     };
   }, [isCameraOn, finishRecording, updateLabel]);
   return (

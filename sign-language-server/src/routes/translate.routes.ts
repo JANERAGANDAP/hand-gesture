@@ -4,6 +4,10 @@ import { aiLimiter } from "../middleware/rateLimiters";
 import { authenticate } from "../middleware/auth.middleware";
 import prisma from "../config/prisma";
 import { normalizeGestureKey } from "../utils/gestureRegistry";
+import {
+  normalizeSpeechText,
+  resolveRegisteredTranslation,
+} from "../utils/signLookup";
 const router = Router();
 router.post("/", authenticate, aiLimiter, async (req, res) => {
   try {
@@ -20,29 +24,34 @@ router.post("/", authenticate, aiLimiter, async (req, res) => {
     }
     const target = typeof targetLanguage === "string" ? targetLanguage.trim() : "";
     const wordKey = normalizeGestureKey(text);
-    if (wordKey && target) {
-      const registeredGesture = await prisma.gesture.findUnique({
-        where: { wordKey },
-        select: { isActive: true, translations: true },
+    const aliasKey = normalizeSpeechText(text);
+    if ((wordKey || aliasKey) && target) {
+      const registeredGesture = await prisma.gesture.findFirst({
+        where: {
+          isActive: true,
+          OR: [
+            ...(wordKey ? [{ wordKey }] : []),
+            ...(aliasKey ? [{ aliases: { has: aliasKey } }] : []),
+          ],
+        },
+        select: {
+          word: true,
+          language: true,
+          translations: true,
+        },
       });
-      if (registeredGesture?.isActive) {
-        const translations = registeredGesture.translations;
-        if (
-          translations &&
-          typeof translations === "object" &&
-          !Array.isArray(translations)
-        ) {
-          const translated = Object.entries(translations).find(
-            ([language]) => language.toLowerCase() === target.toLowerCase(),
-          )?.[1];
-          if (typeof translated === "string" && translated.trim()) {
-            return res.json({
-              translatedText: translated,
-              sourceLanguage: sourceLanguage || "English",
-              targetLanguage: target,
-              provider: "gesture-registry",
-            });
-          }
+      if (registeredGesture) {
+        const translated = resolveRegisteredTranslation(
+          registeredGesture,
+          target,
+        );
+        if (translated) {
+          return res.json({
+            translatedText: translated,
+            sourceLanguage: sourceLanguage || registeredGesture.language,
+            targetLanguage: target,
+            provider: "gesture-registry",
+          });
         }
       }
     }

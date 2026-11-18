@@ -1,13 +1,45 @@
 // src/utils/holisticLoader.ts
-// Loads and initializes the MediaPipe Holistic model once and shares it.
-// Why: the first Holistic call downloads and compiles several MB of WASM
-// and model files. Doing it up front (and only once) removes the delay
-// before the first gesture is detected and avoids reloading it each time
-// the camera restarts.
-declare const Holistic: any;
+// Load the legacy Holistic runtime only on admin recording pages. Loading it
+// globally alongside tasks-vision can replace Emscripten runtime settings.
 
 export const MEDIAPIPE_CDN =
   "https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/";
+
+declare global {
+  interface Window {
+    Holistic?: new (config: {
+      locateFile: (fileName: string) => string;
+    }) => any;
+  }
+}
+
+let scriptPromise: Promise<void> | null = null;
+
+export function loadHolisticScript(): Promise<void> {
+  if (typeof window.Holistic !== "undefined") return Promise.resolve();
+  if (scriptPromise) return scriptPromise;
+
+  scriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `${MEDIAPIPE_CDN}holistic.js`;
+    script.async = true;
+    script.onload = () => {
+      if (typeof window.Holistic === "undefined") {
+        scriptPromise = null;
+        reject(new Error("MediaPipe Holistic script loaded without its API"));
+        return;
+      }
+      resolve();
+    };
+    script.onerror = () => {
+      scriptPromise = null;
+      reject(new Error("Failed to load the MediaPipe Holistic script"));
+    };
+    document.head.appendChild(script);
+  });
+
+  return scriptPromise;
+}
 
 // Cached so every caller waits on the same single load.
 let holisticPromise: Promise<any> | null = null;
@@ -16,9 +48,9 @@ export function loadHolistic(): Promise<any> {
   if (holisticPromise) return holisticPromise;
 
   holisticPromise = (async () => {
-    if (typeof Holistic === "undefined") {
-      throw new Error("MediaPipe Holistic script is not loaded");
-    }
+    await loadHolisticScript();
+    const Holistic = window.Holistic;
+    if (!Holistic) throw new Error("MediaPipe Holistic is unavailable");
     const instance = new Holistic({
       locateFile: (file: string) =>
         `${MEDIAPIPE_CDN}${file.replace(/^\/+/, "")}`,

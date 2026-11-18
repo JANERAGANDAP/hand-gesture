@@ -280,7 +280,7 @@ export const apiClient = {
     }
   },
 };
-const TRANSLATION_CACHE_KEY = "sign-translation-cache-v1";
+const TRANSLATION_CACHE_KEY = "sign-translation-cache-v2";
 const TRANSLATION_CACHE_LIMIT = 100;
 
 function translationCacheKey(

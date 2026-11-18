@@ -1,69 +1,13 @@
 // src/components/Gesture/VideoViewport.tsx
 import React, { useEffect, useRef, useState } from "react";
-import { extractFeatures } from "../../utils/featureExtractor";
 import { useToast } from "../../contexts/ToastContext";
-import { FrameBuffer, buildSmartSentence } from "../../utils/sentenceBuilder";
-import { detectHeuristicSign } from "../../utils/heuristicGestureDetector";
-import { FeatureSmoother } from "../../utils/featureSmoothing";
-import { recognize } from "../../services/recognitionApi";
+import { buildSmartSentence } from "../../utils/sentenceBuilder";
 import { RECOGNITION_UI_CONFIG } from "../../config/recognitionConfig";
 import { GestureStabilityTracker } from "../../utils/gestureStability";
 import { matchLandmarkTemplate } from "../../utils/landmarkMatcher.js";
 import { API_ROOT } from "../../config";
 import { authHeaders } from "../../services/api";
-import {
-  type WristSnapshot,
-  wristSnapshot,
-  getCaptureWarning,
-} from "../../utils/captureQuality";
-import {
-} from "../../utils/handCrop";
-import { loadHolistic } from "../../utils/holisticLoader";
-// TEMPORARY DIAGNOSTIC — logs the movement signal that gates live
-// recognition, to check whether real signing speed actually clears
-// RECOGNITION_UI_CONFIG.MOVEMENT_THRESHOLD after EMA smoothing, or
-// whether it's being smoothed below the threshold and never triggering
-// recognize() during active motion. Throttled to every 5th call so the
-// console stays readable. Remove once the threshold/smoothing is tuned.
-let movementLogCounter = 0;
-function hasSignificantMovement(history: any[]): boolean {
-  if (history.length < 3) return false;
-  const keys = [
-    "left_wrist_x",
-    "left_wrist_y",
-    "right_wrist_x",
-    "right_wrist_y",
-    "left_hand_to_nose",
-    "right_hand_to_nose",
-    "hands_distance",
-  ];
-  let totalMovement = 0;
-  for (let i = 1; i < history.length; i++) {
-    let frameDelta = 0;
-    for (const key of keys) {
-      const a = Number(history[i]?.[key] ?? 0);
-      const b = Number(history[i - 1]?.[key] ?? 0);
-      frameDelta += Math.abs(a - b);
-    }
-    totalMovement += frameDelta / keys.length;
-  }
-  const avgMovement = totalMovement / (history.length - 1);
-  const isSignificant = avgMovement > RECOGNITION_UI_CONFIG.MOVEMENT_THRESHOLD;
-  movementLogCounter += 1;
-  if (movementLogCounter % 5 === 0) {
-    console.log(
-      `[movement] avg=${avgMovement.toFixed(4)} threshold=${RECOGNITION_UI_CONFIG.MOVEMENT_THRESHOLD} significant=${isSignificant}`,
-    );
-  }
-  return isSignificant;
-}
-declare const Holistic: any;
 declare const Camera: any;
-declare const drawConnectors: any;
-declare const drawLandmarks: any;
-declare const HAND_CONNECTIONS: any;
-declare const POSE_CONNECTIONS: any;
-const RECOGNITION_FRAME_INTERVAL = 1;
 const AUTO_SPEAK_IDLE_MS = 2500;
 const LANDMARK_WASM_URL =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/wasm";
@@ -93,22 +37,11 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sequenceBufferRef = useRef(new FrameBuffer(30));
-  const smootherRef = useRef(
-    new FeatureSmoother(RECOGNITION_UI_CONFIG.FEATURE_SMOOTHING_ALPHA),
-  );
   const lastWordRef = useRef("");
-  const gestureLockedRef = useRef(false);
   const lastWordTimeRef = useRef(0);
-  const lastDetectionTimeRef = useRef(0);
-  const isActiveRef = useRef(false);
   const sentenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sentenceBufferRef = useRef<string[]>([]);
   const autoSpeakRef = useRef(true);
-  const movementHistoryRef = useRef<any[]>([]);
-  const movingStreakRef = useRef(0);
-  const lastMovementAtRef = useRef(0);
-  const stableMotionRef = useRef(false);
   const stabilityTrackerRef = useRef(
     new GestureStabilityTracker(
       RECOGNITION_UI_CONFIG.CONFIDENCE_THRESHOLD,
@@ -122,11 +55,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   // word (if any) briefly flickered as a low-scoring candidate in between.
   const unknownStreakRef = useRef(0);
   const [isUnknown, setIsUnknown] = useState(false);
-  const isRecognizingRef = useRef(false);
-  const frameSkipCounterRef = useRef(0);
-  const lastRecognizeCallTimeRef = useRef(0);
-  const wristHistoryRef = useRef<WristSnapshot[]>([]);
-  const [captureWarning, setCaptureWarning] = useState<string | null>(null);
   // Hand-tracking model status, shown as an overlay so the first-load wait
   // is visible instead of looking like a frozen camera.
   const [modelStatus, setModelStatus] = useState<
@@ -211,31 +139,19 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       sentenceBufferRef.current = [];
       setConfidence(0);
       setPreviewWord(null);
-      movementHistoryRef.current = [];
-      movingStreakRef.current = 0;
-      lastMovementAtRef.current = 0;
-      stableMotionRef.current = false;
       stabilityTrackerRef.current.reset();
-      isRecognizingRef.current = false;
-      frameSkipCounterRef.current = 0;
-      lastRecognizeCallTimeRef.current = 0;
       unknownStreakRef.current = 0;
       setIsUnknown(false);
-      smootherRef.current.reset();
       if (sentenceTimerRef.current) {
         clearTimeout(sentenceTimerRef.current);
         sentenceTimerRef.current = null;
       }
-      sequenceBufferRef.current.clear?.();
       lastWordRef.current = "";
       lastWordTimeRef.current = 0;
-      lastDetectionTimeRef.current = 0;
-      isActiveRef.current = false;
     }
   }, [isCapturing]);
   useEffect(() => {
     if (!isCapturing || !videoRef.current) return;
-    let holistic: any = null;
     let handLandmarker: import("@mediapipe/tasks-vision").HandLandmarker | null =
       null;
     let cam: any = null;
@@ -306,15 +222,8 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           ) {
             return;
           }
-          sequenceBufferRef.current.clear?.();
-          movementHistoryRef.current = [];
-          movingStreakRef.current = 0;
-          lastMovementAtRef.current = 0;
-          stableMotionRef.current = false;
           lastWordRef.current = word;
           lastWordTimeRef.current = now2;
-          lastDetectionTimeRef.current = now2;
-          isActiveRef.current = true;
           setPreviewWord(null);
           if (sentenceBufferRef.current[sentenceBufferRef.current.length - 1] !== word) {
             const updated = [...sentenceBufferRef.current, word];
@@ -348,213 +257,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           setPreviewWord(null);
         }
       };
-      const handleHolisticResults = (results: any) => {
-        if (stopped) return;
-        const pose = results.poseLandmarks || [];
-        const left = results.leftHandLandmarks || [];
-        const right = results.rightHandLandmarks || [];
-        const handsVisible = left.length > 0 || right.length > 0;
-        if (!handsVisible) {
-          gestureLockedRef.current = false;
-          setConfidence(0);
-          sequenceBufferRef.current.clear?.();
-          movementHistoryRef.current = [];
-          movingStreakRef.current = 0;
-          lastMovementAtRef.current = 0;
-          stableMotionRef.current = false;
-          stabilityTrackerRef.current.reset();
-          unknownStreakRef.current = 0;
-          setIsUnknown(false);
-          setPreviewWord(null);
-          if (
-            autoSpeakRef.current &&
-            sentenceBufferRef.current.length > 0 &&
-            sentenceTimerRef.current === null
-          ) {
-            sentenceTimerRef.current = setTimeout(() => {
-              const bufferedWords = sentenceBufferRef.current;
-              if (bufferedWords.length > 0) {
-                onGestureDetectedRef.current?.(
-                  buildSmartSentence(bufferedWords),
-                  languageRef.current,
-                );
-                sentenceBufferRef.current = [];
-                setSentence([]);
-              }
-              sentenceTimerRef.current = null;
-            }, AUTO_SPEAK_IDLE_MS);
-          }
-        } else if (sentenceTimerRef.current) {
-          clearTimeout(sentenceTimerRef.current);
-          sentenceTimerRef.current = null;
-        }
-        setCaptureWarning(
-          getCaptureWarning(
-            pose,
-            handsVisible,
-            wristHistoryRef.current,
-            true,
-            results.faceLandmarks?.length > 0,
-          ),
-        );
-        const canvas = canvasRef.current;
-        const ctx = canvas?.getContext("2d");
-        if (ctx && canvas) {
-          if (canvas.width !== 640) {
-            canvas.width = 640;
-            canvas.height = 480;
-          }
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          const active =
-            isActiveRef.current &&
-            Date.now() - lastDetectionTimeRef.current <= 2800;
-          ctx.globalAlpha = active ? 1 : 0.25;
-          if (pose.length) {
-            drawConnectors(ctx, pose, POSE_CONNECTIONS, {
-              color: "#4ade80",
-              lineWidth: 3,
-            });
-            drawLandmarks(ctx, pose, {
-              color: "#facc15",
-              radius: 3,
-            });
-          }
-          if (left.length) {
-            drawConnectors(ctx, left, HAND_CONNECTIONS, {
-              color: "#60a5fa",
-              lineWidth: 3,
-            });
-            drawLandmarks(ctx, left, {
-              color: "#f87171",
-              radius: 2.5,
-            });
-          }
-          if (right.length) {
-            drawConnectors(ctx, right, HAND_CONNECTIONS, {
-              color: "#60a5fa",
-              lineWidth: 3,
-            });
-            drawLandmarks(ctx, right, {
-              color: "#f87171",
-              radius: 2.5,
-            });
-          }
-          ctx.globalAlpha = 1;
-        }
-        const rawFeatures = extractFeatures(
-          pose,
-          left,
-          right,
-          results.faceLandmarks || [],
-        );
-        if (!rawFeatures) return;
-        const features = smootherRef.current.smooth(rawFeatures);
-        wristHistoryRef.current.push(wristSnapshot(features));
-        if (wristHistoryRef.current.length > 3) {
-          wristHistoryRef.current.shift();
-        }
-        movementHistoryRef.current.push(features);
-        if (movementHistoryRef.current.length > 3) {
-          movementHistoryRef.current.shift();
-        }
-
-        // Instant geometric / landmark sign detector for core gestures (I, you, hungry, black, water, eat, etc.)
-        if (handsVisible) {
-          const heuristicMatch = detectHeuristicSign(
-            features,
-            pose,
-            left,
-            right,
-            movementHistoryRef.current,
-          );
-          if (heuristicMatch) {
-            handleRecognitionResult(
-              {
-                recognized: true,
-                word: heuristicMatch.word,
-                confidence: heuristicMatch.confidence,
-              },
-            );
-          }
-        }
-        const rawMoving = hasSignificantMovement(movementHistoryRef.current);
-        const nowTick = Date.now();
-        if (rawMoving) {
-          movingStreakRef.current++;
-          lastMovementAtRef.current = nowTick;
-        } else {
-          movingStreakRef.current = 0;
-        }
-        if (
-          movingStreakRef.current >= RECOGNITION_UI_CONFIG.MOVEMENT_ENTRY_STREAK
-        )
-          stableMotionRef.current = true;
-        // Exit on a decay window, not an instant still-frame count: a held
-        // static handshape has near-zero movement by definition, so an
-        // exit-on-stillness gate here would turn recognition OFF right as
-        // the sign becomes fully formed and most readable. Instead stay
-        // "active" for MOTION_HOLD_MS after the last real movement, giving
-        // a hold time to actually get scored before the window closes.
-        if (
-          stableMotionRef.current &&
-          lastMovementAtRef.current > 0 &&
-          nowTick - lastMovementAtRef.current > RECOGNITION_UI_CONFIG.MOTION_HOLD_MS
-        )
-          stableMotionRef.current = false;
-        sequenceBufferRef.current.push(features);
-        if (!stableMotionRef.current) {
-          return;
-        }
-        frameSkipCounterRef.current += 1;
-        if (frameSkipCounterRef.current < RECOGNITION_FRAME_INTERVAL) {
-          return;
-        }
-        frameSkipCounterRef.current = 0;
-        if (isRecognizingRef.current) {
-          return;
-        }
-        const nowMs = Date.now();
-        if (
-          nowMs - lastRecognizeCallTimeRef.current <
-          RECOGNITION_UI_CONFIG.MIN_RECOGNIZE_INTERVAL_MS
-        ) {
-          return;
-        }
-        lastRecognizeCallTimeRef.current = nowMs;
-        isRecognizingRef.current = true;
-        // No hand-crop capture here: the backend no longer reads it, so
-        // cropping + base64-encoding on every frame only cost CPU and
-        // upload time. (async () => ...)() keeps a sync throw from
-        // leaving isRecognizingRef stuck at true.
-        (async () =>
-          recognize({
-            gestureType: "dynamic",
-            features,
-            sequence: sequenceBufferRef.current.snapshot(),
-            language: languageRef.current,
-          }))()
-          .then((result) => {
-            handleRecognitionResult(result);
-          })
-          .catch((e) => {
-            console.error(e);
-          })
-          .finally(() => {
-            isRecognizingRef.current = false;
-          });
-      };
-      void loadHolistic()
-        .then((instance) => {
-          if (stopped) return;
-          holistic = instance;
-          holistic.onResults(handleHolisticResults);
-        })
-        .catch((error) => {
-          console.warn(
-            "MediaPipe Holistic fallback is unavailable; local landmark recognition remains active.",
-            error,
-          );
-        });
       cam = new Camera(videoRef.current, {
         onFrame: async () => {
           const video = videoRef.current;
@@ -623,13 +325,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           } catch (error) {
             console.error("MediaPipe hand detection failed:", error);
           }
-          if (holistic) {
-            try {
-              await holistic.send({ image: video });
-            } catch (error) {
-              console.error("Holistic recognition fallback failed:", error);
-            }
-          }
         },
         width: 640,
         height: 480,
@@ -646,9 +341,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       }
       cam?.stop();
       handLandmarker?.close();
-      if (holistic) {
-        holistic.onResults(() => {});
-      }
     };
   }, [isCapturing, modelRetryKey]);
   const speakSentence = () => {
@@ -716,9 +408,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
 
         <div style={styles.confidenceBadge(confidence)}>{confidence}%</div>
 
-        {captureWarning && (
-          <div style={styles.captureWarningBanner}>⚠ {captureWarning}</div>
-        )}
       </div>
 
       <div style={styles.transcription}>
@@ -936,13 +625,13 @@ const styles = {
   sentenceButton: {
     border: "1px solid rgba(31,122,92,0.22)",
     borderRadius: 14,
-    padding: "11px 18px",
+    padding: "10px 15px",
     color: "#174b3a",
     background: "linear-gradient(180deg, #f3fbf7, #e8f5ee)",
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 700,
     cursor: "pointer",
-    minHeight: 46,
+    minHeight: 42,
     boxShadow: "0 3px 10px rgba(31,122,92,0.08)",
   } as React.CSSProperties,
 };

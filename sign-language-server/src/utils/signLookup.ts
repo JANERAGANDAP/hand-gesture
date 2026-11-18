@@ -51,3 +51,27 @@ export function signLookupScore(query: string, candidates: string[]): number | n
     ? 1
     : null;
 }
+
+export function resolveRegisteredTranslation(
+  gesture: {
+    word: string;
+    language: string;
+    translations: unknown;
+  },
+  targetLanguage: string,
+): string | null {
+  const translations = gesture.translations;
+  if (translations && typeof translations === "object" && !Array.isArray(translations)) {
+    const translated = Object.entries(translations).find(
+      ([language, value]) =>
+        language.toLowerCase() === targetLanguage.toLowerCase() &&
+        typeof value === "string" &&
+        value.trim(),
+    )?.[1];
+    if (typeof translated === "string") return translated;
+  }
+
+  return gesture.language.toLowerCase() === targetLanguage.toLowerCase()
+    ? gesture.word
+    : null;
+}

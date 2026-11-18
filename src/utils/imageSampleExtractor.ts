@@ -5,6 +5,7 @@
 // single frame (no seeking, no motion).
 import { extractFeatures, type GestureFeatures } from "./featureExtractor";
 import { HAND_CROP_SIZE, type PixelBoundingBox } from "./handCrop";
+import { loadHolisticScript } from "./holisticLoader";
 
 interface Landmark {
   x: number;
@@ -85,10 +86,10 @@ export function pickDominantHandLandmarks(
 export async function extractFeaturesFromImage(
   image: HTMLImageElement,
 ): Promise<ImageExtraction | null> {
-  if (typeof Holistic === "undefined") {
-    throw new Error("MediaPipe Holistic is not loaded yet");
-  }
-  const holistic = new Holistic({
+  await loadHolisticScript();
+  const HolisticConstructor = window.Holistic;
+  if (!HolisticConstructor) throw new Error("MediaPipe Holistic is unavailable");
+  const holistic = new HolisticConstructor({
     locateFile: (fileName: string) =>
       `${MEDIAPIPE_CDN}${fileName.replace(/^\/+/, "")}`,
   });
@@ -104,7 +105,7 @@ export async function extractFeaturesFromImage(
   // A function (not a direct read) so TypeScript doesn't assume the value
   // stays null after the loop resets it; onResults assigns it asynchronously.
   const readLatestResults = () => latestResults;
-  holistic.onResults((results) => {
+  holistic.onResults((results: HolisticResults) => {
     latestResults = results;
   });
   try {
