@@ -15,6 +15,25 @@ enum Role {
   STUDENT
 }
 
+model Gesture {
+  id           Int          @id @default(autoincrement())
+  word         String
+  wordKey      String       @unique
+  language     String       @default("English")
+  translations Json         @default("{}")
+  aliases      String[]     @default([])
+  landmarks    Json?
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  samples      SignGesture[]
+  assets       SignAsset[]
+
+  @@index([word])
+  @@index([language])
+  @@index([isActive])
+}
+
 model SignGesture {
   id           Int      @id @default(autoincrement())
   word         String
@@ -26,25 +45,31 @@ model SignGesture {
   handCropUrl  String?
   description  String?
   isActive     Boolean  @default(true)
+  gestureId    Int?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  gesture      Gesture? @relation(fields: [gestureId], references: [id], onDelete: SetNull)
 
   @@index([word])
   @@index([language])
   @@index([gestureType])
   @@index([isActive])
+  @@index([gestureId])
 }
 
-model SpeechSign {
+model SignAsset {
   id          Int      @id @default(autoincrement())
   word        String
   file        String
   type        String
   isPublished Boolean  @default(true)
+  gestureId   Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  gesture     Gesture? @relation(fields: [gestureId], references: [id], onDelete: SetNull)
 
   @@index([word])
+  @@index([gestureId])
 }
 
 model Keyword {

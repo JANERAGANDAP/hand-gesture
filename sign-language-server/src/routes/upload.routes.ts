@@ -20,6 +20,12 @@ import {
   requireRole,
   AuthedRequest,
 } from "../middleware/auth.middleware";
+import {
+  normalizeGestureKey,
+  parseGestureTranslations,
+  syncGestureRegistry,
+  type GestureTranslations,
+} from "../utils/gestureRegistry";
 const router = express.Router();
 router.use(uploadLimiter);
 const ALLOWED_MIME_TYPES = [
@@ -110,10 +116,48 @@ function stagingKey(userId: string | number, sessionId: string, part: number) {
 }
 
 async function findDuplicate(word: string) {
-  const existingSigns = await prisma.speechSign.findMany({
+  const existingSigns = await prisma.signAsset.findMany({
     select: { id: true, word: true },
   });
   return existingSigns.find((sign) => isSameSignWord(sign.word, word));
+}
+
+function parseTranslationsField(value: unknown): GestureTranslations | null {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (parsed === undefined) return {};
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (
+    Object.values(parsed).some(
+      (translation) =>
+        typeof translation !== "string" || !translation.trim(),
+    )
+  ) {
+    return null;
+  }
+  return parseGestureTranslations(parsed);
+}
+
+function parseAliasesField(value: unknown): string[] | null {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (parsed === undefined) return [];
+  if (!Array.isArray(parsed) || parsed.some((alias) => typeof alias !== "string")) {
+    return null;
+  }
+  return parsed.map((alias: string) => alias.trim()).filter(Boolean);
 }
 
 async function saveUploadedSign(
@@ -122,31 +166,43 @@ async function saveUploadedSign(
   fileType: string,
   fileKey: string,
   isPublished: boolean,
+  translations: GestureTranslations = {},
+  aliases: string[] = [],
 ) {
   const publicUrl = publicObjectUrl(PUBLIC_BUCKET, fileKey);
-  const created = await prisma.speechSign.create({
-    data: {
+  const created = await prisma.$transaction(async (tx) => {
+    const gesture = await syncGestureRegistry(tx, {
       word,
-      file: publicUrl,
-      type: fileType,
-      isPublished,
-    },
-  });
-  await prisma.keyword.upsert({
-    where: {
-      language_keyword: {
+      language,
+      translations,
+      aliases,
+    });
+    const asset = await tx.signAsset.create({
+      data: {
+        word,
+        file: publicUrl,
+        type: fileType,
+        isPublished,
+        gestureId: gesture.id,
+      },
+    });
+    await tx.keyword.upsert({
+      where: {
+        language_keyword: {
+          language,
+          keyword: word,
+        },
+      },
+      update: {
+        value: word,
+      },
+      create: {
         language,
         keyword: word,
+        value: word,
       },
-    },
-    update: {
-      value: word,
-    },
-    create: {
-      language,
-      keyword: word,
-      value: word,
-    },
+    });
+    return asset;
   });
   return {
     success: true,
@@ -165,10 +221,15 @@ function parseChunkUploadMetadata(body: Record<string, unknown>) {
   const fileName = typeof body.fileName === "string" ? body.fileName : "";
   const fileType = typeof body.type === "string" ? body.type : "";
   const size = Number(body.size);
+  const translations = parseTranslationsField(body.translations);
+  const aliases = parseAliasesField(body.aliases);
 
   if (
     !word ||
+    !normalizeGestureKey(word) ||
     !language ||
+    !translations ||
+    !aliases ||
     !fileName ||
     !ALLOWED_MIME_TYPES.includes(fileType) ||
     !Number.isInteger(size) ||
@@ -184,6 +245,8 @@ function parseChunkUploadMetadata(body: Record<string, unknown>) {
     fileName,
     fileType,
     size,
+    translations,
+    aliases,
     isPublished: body.publish !== "false" && body.publish !== false,
   };
 }
@@ -310,6 +373,8 @@ router.post("/chunk/complete", authenticate, async (req: AuthedRequest, res) => 
       metadata.fileType,
       fileKey,
       metadata.isPublished,
+      metadata.translations,
+      metadata.aliases,
     );
     const cleanup = await deleteObjects(PRIVATE_BUCKET, chunkKeys);
     if (cleanup.failed) {
@@ -358,14 +423,32 @@ router.post(
   async (req: AuthedRequest, res) => {
   try {
     const rawWord = req.body.word;
-    const language = req.body.language;
+    const language =
+      typeof req.body.language === "string" ? req.body.language.trim() : "";
+    const translations = parseTranslationsField(req.body.translations);
+    const aliases = parseAliasesField(req.body.aliases);
     const file = req.file;
     if (!rawWord || typeof rawWord !== "string" || !rawWord.trim()) {
       return res.status(400).json({
         error: "Word is required",
       });
     }
+    if (typeof language !== "string" || !language.trim()) {
+      return res.status(400).json({
+        error: "Language is required",
+      });
+    }
+    if (!translations || !aliases) {
+      return res.status(400).json({
+        error: "Translations must be a language-to-text object and aliases must be an array",
+      });
+    }
     const word = sanitizeSignWord(rawWord);
+    if (!normalizeGestureKey(word)) {
+      return res.status(400).json({
+        error: "Word must contain at least one letter or number",
+      });
+    }
     // Catch likely-accidental duplicates (same phrase, different
     // casing/spacing) before they can quietly create two library
     // entries that both look right in the UI, and where speech will
@@ -405,6 +488,8 @@ router.post(
       fileType,
       objectKey,
       isPublished,
+      translations,
+      aliases,
     );
     res.json(saved);
   } catch (err) {
@@ -436,7 +521,7 @@ router.patch(
         error: "Valid numeric id is required",
       });
     }
-    const existing = await prisma.speechSign.findUnique({ where: { id } });
+    const existing = await prisma.signAsset.findUnique({ where: { id } });
     if (!existing) {
       return res.status(404).json({ error: "Sign not found" });
     }
@@ -446,16 +531,21 @@ router.patch(
     // existed before this fix) — fixing one shouldn't silently create an
     // exact duplicate of the other.
     const collision = (
-      await prisma.speechSign.findMany({ select: { id: true, word: true } })
+      await prisma.signAsset.findMany({ select: { id: true, word: true } })
     ).find((s) => s.id !== id && isSameSignWord(s.word, cleaned));
     if (collision) {
       return res.status(409).json({
         error: `Cleaning this up would duplicate "${collision.word}" (id ${collision.id}) — delete one of them instead.`,
       });
     }
-    const updated = await prisma.speechSign.update({
-      where: { id },
-      data: { word: cleaned },
+    const updated = await prisma.$transaction(async (tx) => {
+      const gesture = await syncGestureRegistry(tx, {
+        word: cleaned,
+      });
+      return tx.signAsset.update({
+        where: { id },
+        data: { word: cleaned, gestureId: gesture.id },
+      });
     });
     res.json({
       success: true,
@@ -491,7 +581,7 @@ router.patch(
         error: "isPublished (boolean) is required",
       });
     }
-    const updated = await prisma.speechSign.update({
+    const updated = await prisma.signAsset.update({
       where: { id },
       data: { isPublished: req.body.isPublished },
     });
@@ -524,7 +614,7 @@ router.delete(
       });
     }
     const id = parsedId;
-    const existing = await prisma.speechSign.findUnique({
+    const existing = await prisma.signAsset.findUnique({
       where: {
         id,
       },
@@ -544,7 +634,7 @@ router.delete(
     // Remove the file from storage (deleteObjects logs its own failures).
     const objectKey = keyFromUrl(existing.file, PUBLIC_BUCKET);
     if (objectKey) await deleteObjects(PUBLIC_BUCKET, [objectKey]);
-    await prisma.speechSign.delete({
+    await prisma.signAsset.delete({
       where: {
         id,
       },

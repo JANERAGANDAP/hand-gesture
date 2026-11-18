@@ -55,6 +55,8 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   const [showAddPanel, setShowAddPanel] = useState(false);
   const [newWord, setNewWord] = useState("");
   const [newLanguage, setNewLanguage] = useState(language || "English");
+  const [translationsInput, setTranslationsInput] = useState("{}");
+  const [aliasesInput, setAliasesInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
@@ -135,6 +137,8 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     setSelectedFile(null);
     setSelectedPreviewUrl(null);
     setNewWord("");
+    setTranslationsInput("{}");
+    setAliasesInput("");
     setSubmitError(null);
   };
 
@@ -238,9 +242,26 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     setSubmitting(true);
     setSubmitError(null);
     try {
+      const translations: unknown = JSON.parse(translationsInput);
+      if (
+        !translations ||
+        typeof translations !== "object" ||
+        Array.isArray(translations) ||
+        Object.values(translations).some(
+          (translation) =>
+            typeof translation !== "string" || !translation.trim(),
+        )
+      ) {
+        throw new Error("Translations must be a JSON object of language and text pairs.");
+      }
       await uploadSignAsset(file, {
         word: newWord.trim(),
         language: newLanguage,
+        translations: translations as Record<string, string>,
+        aliases: aliasesInput
+          .split(",")
+          .map((alias) => alias.trim())
+          .filter(Boolean),
       });
       setSubmitSuccess(`"${newWord.trim()}" added to the library.`);
       closeAddPanel();
@@ -415,6 +436,24 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                   </option>
                 ))}
               </select>
+            </div>
+            <div style={{ display: "grid", gap: "10px", marginBottom: "14px" }}>
+              <input
+                type="text"
+                value={translationsInput}
+                onChange={(e) => setTranslationsInput(e.target.value)}
+                placeholder='Translations JSON, e.g. {"Tagalog":"pula","Cebuano":"pula"}'
+                aria-label="Translations by language in JSON format"
+                style={inputStyle}
+              />
+              <input
+                type="text"
+                value={aliasesInput}
+                onChange={(e) => setAliasesInput(e.target.value)}
+                placeholder="Alternate spoken words (comma-separated)"
+                aria-label="Alternate spoken words"
+                style={inputStyle}
+              />
             </div>
 
             {mode === "gesture" ? (

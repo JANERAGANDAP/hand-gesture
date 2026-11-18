@@ -3,7 +3,11 @@ export const RECOGNITION_UI_CONFIG = {
   // This prevents transitional hand motion (e.g. Moving from "I" to "hungry")
   // from falsely locking in a random sign.
   CONSECUTIVE_MATCH_THRESHOLD: 2,
-  CONFIDENCE_THRESHOLD: 0.55,
+  CONFIDENCE_THRESHOLD: 0.8,
+  DETECTION_STABILITY_MS: 500,
+  SPEECH_COOLDOWN_MS: 2500,
+  REPEAT_DEBOUNCE_MS: 700,
+  WORD_TRANSITION_DEBOUNCE_MS: 250,
   MOVEMENT_ENTRY_STREAK: 2,
   // How long (ms) recognition stays active after the last detected
   // movement, instead of shutting off after a couple of still frames.

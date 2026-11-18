@@ -4,7 +4,11 @@ import AdminSignRecorder, { RECOMMENDED_RECORDINGS } from "./AdminSignRecorder";
 import TeacherInvites from "./TeacherInvites";
 import AppButton from "../ui/AppButton";
 import { API_ROOT, resolveApiUrl } from "../../config";
-import { authHeaders, uploadSignAsset } from "../../services/api";
+import {
+  authHeaders,
+  invalidateSignLibraryCache,
+  uploadSignAsset,
+} from "../../services/api";
 import { useAuth } from "../../contexts/AuthContext";
 import {
   getGestureSummary,
@@ -36,7 +40,11 @@ const AdminSigns = () => {
 
   const [word, setWord] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [bulkFile, setBulkFile] = useState<File | null>(null);
+  const [bulkImporting, setBulkImporting] = useState(false);
   const [assets, setAssets] = useState<SignAsset[]>([]);
+  const [translationsInput, setTranslationsInput] = useState("{}");
+  const [aliasesInput, setAliasesInput] = useState("");
   const [language, setLanguage] = useState("English");
   const [publishNow, setPublishNow] = useState(true);
   const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set());
@@ -157,10 +165,27 @@ const AdminSigns = () => {
     // Unpublished uploads stay hidden from student listings until a
     // teacher or admin reviews and publishes them.
     try {
+      const translations: unknown = JSON.parse(translationsInput);
+      if (
+        !translations ||
+        typeof translations !== "object" ||
+        Array.isArray(translations) ||
+        Object.values(translations).some(
+          (translation) =>
+            typeof translation !== "string" || !translation.trim(),
+        )
+      ) {
+        throw new Error("Translations must be a JSON object of language and text pairs.");
+      }
       const data = await uploadSignAsset(file, {
         word,
         language,
         publish: publishNow,
+        translations: translations as Record<string, string>,
+        aliases: aliasesInput
+          .split(",")
+          .map((alias) => alias.trim())
+          .filter(Boolean),
       });
       const newAsset = {
         id: data.id,
@@ -169,16 +194,50 @@ const AdminSigns = () => {
         file: resolveApiUrl(data.file),
         isPublished: data.isPublished,
       };
+
       const updated = [...assets, newAsset];
       saveAssets(updated);
       setWord("");
+      setTranslationsInput("{}");
+      setAliasesInput("");
       setFile(null);
       setPreview(null);
       setPublishNow(true);
       alert("Upload successful!");
     } catch (err) {
       console.error(err);
-      alert("Upload failed");
+      alert(err instanceof Error ? err.message : "Upload failed");
+    }
+  };
+
+  const handleBulkImport = async () => {
+    if (!bulkFile) {
+      alert("Choose a .json or .csv dataset file first.");
+      return;
+    }
+    const formData = new FormData();
+    formData.append("file", bulkFile);
+    setBulkImporting(true);
+    try {
+      const response = await fetch(`${API_ROOT}/api/gestures/bulk`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: formData,
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Bulk import failed");
+      }
+      invalidateSignLibraryCache();
+      setBulkFile(null);
+      alert(
+        `Imported ${result.imported} gesture entries and registered ${result.assets} image assets.`,
+      );
+    } catch (error) {
+      console.error("Bulk gesture import failed:", error);
+      alert(error instanceof Error ? error.message : "Bulk import failed");
+    } finally {
+      setBulkImporting(false);
     }
   };
 
@@ -349,6 +408,52 @@ const AdminSigns = () => {
         </AppButton>
       </div>
 
+      {(user?.role === "ADMIN" || user?.role === "TEACHER") && <section
+        className="pearl-card"
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: 12,
+          padding: 18,
+          marginBottom: 24,
+        }}
+      >
+        <div style={{ flex: "1 1 260px" }}>
+          <strong>Bulk gesture dataset import</strong>
+          <div style={{ color: "var(--pearl-text-muted)", fontSize: 13 }}>
+            Import up to 1,000 entries from JSON or CSV, including exactly 21
+            x/y/z landmarks per gesture.
+          </div>
+        </div>
+        <input
+          type="file"
+          accept=".json,.csv,application/json,text/csv"
+          aria-label="Select gesture dataset JSON or CSV"
+          onChange={(event) => {
+            const selected = event.target.files?.[0] ?? null;
+            if (
+              selected &&
+              (!/\.(json|csv)$/i.test(selected.name) ||
+                selected.size > 5 * 1024 * 1024)
+            ) {
+              alert("Choose a .json or .csv file no larger than 5 MB.");
+              event.target.value = "";
+              setBulkFile(null);
+              return;
+            }
+            setBulkFile(selected);
+          }}
+        />
+        <AppButton
+          variant="primary"
+          onPress={() => void handleBulkImport()}
+          disabled={!bulkFile || bulkImporting}
+        >
+          {bulkImporting ? "Importing…" : "Import dataset"}
+        </AppButton>
+      </section>}
+
       <div className="row">
         <div className="col-lg-3">
           {}
@@ -381,6 +486,24 @@ const AdminSigns = () => {
                 value={word}
                 onChange={(e) => setWord(e.target.value)}
                 className="pearl-input"
+              />
+
+              <input
+                type="text"
+                placeholder='Translations JSON, e.g. {"Tagalog":"pula","Cebuano":"pula"}'
+                value={translationsInput}
+                onChange={(e) => setTranslationsInput(e.target.value)}
+                className="pearl-input"
+                aria-label="Translations by language in JSON format"
+              />
+
+              <input
+                type="text"
+                placeholder="Alternate spoken words (comma-separated)"
+                value={aliasesInput}
+                onChange={(e) => setAliasesInput(e.target.value)}
+                className="pearl-input"
+                aria-label="Alternate spoken words"
               />
 
               <input

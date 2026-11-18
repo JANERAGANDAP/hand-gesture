@@ -84,7 +84,7 @@ async function main() {
   const cropFiles = await listLocalFiles(cropsDir);
   console.log(`Local backup: ${signFiles.length} sign file(s), ${cropFiles.length} hand-crop file(s).`);
 
-  const speechSigns = await prisma.speechSign.findMany({ select: { id: true, file: true } });
+  const speechSigns = await prisma.signAsset.findMany({ select: { id: true, file: true } });
   const gestures = await prisma.signGesture.findMany({
     where: { handCropUrl: { not: null } },
     select: { id: true, handCropUrl: true },
@@ -116,7 +116,7 @@ async function main() {
       signsSkipped.push(`id ${row.id}: ${row.file}`);
       continue;
     }
-    await prisma.speechSign.update({
+    await prisma.signAsset.update({
       where: { id: row.id },
       data: { file: publicObjectUrl(PUBLIC_BUCKET, `${SIGNS_PREFIX}${oldKey}`) },
     });

@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "exclude":["src/scripts/**/*", "node_modules", "dist"]
+  "exclude":["src/scripts/**/*", "prisma/**/*", "node_modules", "dist"]
 }

@@ -1,0 +1,11 @@
+{
+  "_format": {
+    "gestureLabel": "string",
+    "englishWord": "string",
+    "tagalogWord": "string",
+    "cebuanoWord": "string",
+    "landmarks": "exactly 21 objects with numeric x, y, and z",
+    "imageUrl": "optional public http(s) URL"
+  },
+  "gestures": []
+}

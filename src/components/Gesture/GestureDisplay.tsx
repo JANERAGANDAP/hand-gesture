@@ -15,6 +15,8 @@ import { useAuth } from "../../contexts/AuthContext";
 import { useToast } from "../../contexts/ToastContext";
 import { translateText } from "../../services/api";
 import { warmRecognition } from "../../services/recognitionApi";
+import { RECOGNITION_UI_CONFIG } from "../../config/recognitionConfig";
+import { shouldSpeakGesture } from "../../utils/gestureStability";
 import type { HistoryEntry } from "./types";
 type Language = "English" | "Cebuano" | "Tagalog" | "Ilocano" | "Bikolano";
 type Mode = "gesture" | "speech";
@@ -29,12 +31,21 @@ const GestureDisplay: React.FC = () => {
   const [mode, setMode] = useState<Mode>("gesture");
   const [gestureText, setGestureText] = useState("");
   const [speechText, setSpeechText] = useState("");
+  const [translationInput, setTranslationInput] = useState<{
+    text: string;
+    sourceLanguage: string;
+  } | null>(null);
   const [translatedText, setTranslatedText] = useState("");
   const [guideOpen, setGuideOpen] = useState(true);
   const { showToast } = useToast();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const translationRequestIdRef = useRef(0);
+  const lastGestureSpeechRef = useRef<{
+    text: string;
+    targetLanguage: string;
+    spokenAt: number;
+  }>({ text: "", targetLanguage: "", spokenAt: 0 });
   const isLoggedIn = Boolean(user);
   // Warm the backend (server, database, gesture cache) once the user is
   // signed in, so the first recognition does not pay the cold-start cost.
@@ -109,37 +120,65 @@ const GestureDisplay: React.FC = () => {
       showToast("Failed to load history", "error");
     }
   };
-  const handleTextTranslation = async (
-    text: string,
-    sourceLanguage: string,
-    targetLanguage: string,
-  ) => {
-    const requestId = ++translationRequestIdRef.current;
-    if (!text?.trim()) {
-      setTranslatedText("");
-      return;
-    }
-    try {
-      const result = await translateText(text, sourceLanguage, targetLanguage);
-      if (requestId !== translationRequestIdRef.current) return;
-      setTranslatedText(result.translatedText || text);
-    } catch (err) {
-      console.error(err);
-      if (requestId !== translationRequestIdRef.current) return;
-      setTranslatedText(text);
-    }
-  };
   useEffect(() => {
     loadHistory();
   }, []);
   useEffect(() => {
-    if (mode === "gesture") {
-      setSpeechText("");
-    } else {
-      setGestureText("");
+    if (!translationInput?.text.trim()) {
+      translationRequestIdRef.current += 1;
+      return;
     }
-    setTranslatedText("");
-  }, [mode]);
+    const requestId = ++translationRequestIdRef.current;
+    let cancelled = false;
+    void translateText(
+      translationInput.text,
+      translationInput.sourceLanguage,
+      activeLang,
+    )
+      .then((result) => {
+        if (cancelled || requestId !== translationRequestIdRef.current) return;
+        const output = result.translatedText || translationInput.text;
+        setTranslatedText(output);
+        if (mode !== "gesture" || !("speechSynthesis" in window)) return;
+        const previousSpeech = lastGestureSpeechRef.current;
+        const spokenAt = Date.now();
+        if (
+          !shouldSpeakGesture(
+            output,
+            activeLang,
+            spokenAt,
+            previousSpeech,
+            RECOGNITION_UI_CONFIG.SPEECH_COOLDOWN_MS,
+          )
+        ) {
+          return;
+        }
+        lastGestureSpeechRef.current = {
+          text: output,
+          targetLanguage: activeLang,
+          spokenAt,
+        };
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(output);
+        const languageCodes: Record<string, string> = {
+          English: "en-US",
+          Tagalog: "fil-PH",
+          Cebuano: "ceb-PH",
+          Ilocano: "fil-PH",
+          Bikolano: "fil-PH",
+        };
+        utterance.lang = languageCodes[activeLang] ?? "en-US";
+        window.speechSynthesis.speak(utterance);
+      })
+      .catch((error) => {
+        console.error("Translation failed:", error);
+        if (cancelled || requestId !== translationRequestIdRef.current) return;
+        setTranslatedText(translationInput.text);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLang, mode, translationInput]);
   const handleModeSwitch = (newMode: Mode) => {
     if (newMode === "speech" && isCapturing) {
       setIsCapturing(false);
@@ -150,6 +189,13 @@ const GestureDisplay: React.FC = () => {
     if (newMode === "gesture" && showLibrary) {
       setShowLibrary(false);
     }
+    if (newMode === "gesture") {
+      setSpeechText("");
+    } else {
+      setGestureText("");
+    }
+    setTranslationInput(null);
+    setTranslatedText("");
     setMode(newMode);
   };
   const handleGestureDetected = useCallback(
@@ -158,16 +204,16 @@ const GestureDisplay: React.FC = () => {
       if (!rawSentence) return;
       setGestureText(rawSentence);
       setTranslatedText("");
+      setTranslationInput({ text: rawSentence, sourceLanguage: "English" });
       addHistory(rawSentence, lang, "gesture");
-      void handleTextTranslation(rawSentence, "English", activeLang);
     },
-    [activeLang],
+    [],
   );
   const handleSpeechDetected = async (text: string) => {
     setSpeechText(text);
     setTranslatedText("");
+    setTranslationInput({ text, sourceLanguage: "English" });
     addHistory(text, activeLang, "speech");
-    void handleTextTranslation(text, "English", activeLang);
   };
   return (
     <div style={styles.page}>
@@ -175,7 +221,10 @@ const GestureDisplay: React.FC = () => {
         <Sidebar
           languages={languages}
           activeLang={activeLang}
-          setActiveLang={(lang) => setActiveLang(lang as Language)}
+          setActiveLang={(lang) => {
+            setActiveLang(lang as Language);
+            setTranslatedText("");
+          }}
           sidebarOpen={sidebarOpen}
           toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         />
@@ -212,6 +261,7 @@ const GestureDisplay: React.FC = () => {
                 <TranscriptionCard
                   text={gestureText}
                   translatedText={translatedText}
+                  targetLanguage={activeLang}
                   mode="gesture"
                 />
               </>
@@ -226,6 +276,7 @@ const GestureDisplay: React.FC = () => {
                 <TranscriptionCard
                   text={speechText}
                   translatedText={translatedText}
+                  targetLanguage={activeLang}
                   mode="speech"
                 />
               </>

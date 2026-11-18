@@ -1,4 +1,9 @@
-import { apiClient, authHeaders, buildUrl } from "./api";
+import {
+  apiClient,
+  authHeaders,
+  buildUrl,
+  invalidateSignLibraryCache,
+} from "./api";
 export interface GestureResponse {
   success: boolean;
   gesture?: any;
@@ -41,7 +46,9 @@ export async function saveGesture(data: GestureData): Promise<GestureResponse> {
         timeout: 15000,
       },
     );
-    return response.data ?? response;
+    const result = response.data ?? response;
+    if (result?.success) invalidateSignLibraryCache();
+    return result;
   } catch (error: any) {
     console.error("Failed to save gesture:", error);
     return {

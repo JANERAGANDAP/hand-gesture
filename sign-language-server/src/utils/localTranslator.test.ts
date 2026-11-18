@@ -10,6 +10,10 @@ test("fallbackTranslate: exact phrase match returns the mapped phrase", () => {
 test("fallbackTranslate: single known word is translated", () => {
   assert.equal(fallbackTranslate("hello", "English", "Bikolano"), "kumusta");
 });
+test("fallbackTranslate: red resolves to Tagalog and Cebuano", () => {
+  assert.equal(fallbackTranslate("red!", "English", "Tagalog"), "pula");
+  assert.equal(fallbackTranslate("red", "English", "Cebuano"), "pula");
+});
 test("fallbackTranslate: unknown word is returned unchanged", () => {
   assert.equal(
     fallbackTranslate("xyznotaword", "English", "Tagalog"),

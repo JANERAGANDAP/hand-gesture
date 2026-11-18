@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
+import { Prisma } from "@prisma/client";
 import multer from "multer";
 import prisma from "../config/prisma";
 import { clearStatsCache } from "./recognition.routes";
@@ -12,6 +13,15 @@ import { RECOGNITION_CONFIG } from "../config/recognitionConfig";
 import { authenticate, requireRole } from "../middleware/auth.middleware";
 import { PRIVATE_BUCKET, putObject, signHandCropUrl } from "../config/storage";
 import { parseJsonField } from "../utils/jsonField";
+import {
+  normalizeGestureKey,
+  parseGestureTranslations,
+  syncGestureRegistry,
+} from "../utils/gestureRegistry";
+import {
+  parsePremadeGestureImport,
+  type PremadeGestureInput,
+} from "../utils/premadeGestureImport";
 
 // Hand-crops live in a private bucket, so any gesture sent to the client
 // gets its stored key swapped for a temporary readable (presigned) URL.
@@ -27,6 +37,220 @@ async function withSignedHandCrop<T extends { handCropUrl: string | null; featur
 }
 const router = Router();
 router.use(generalLimiter);
+
+const bulkGestureUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (!/\.(json|csv)$/i.test(file.originalname)) {
+      callback(new Error("Only .json and .csv files are supported"));
+      return;
+    }
+    callback(null, true);
+  },
+});
+const parseBulkGestureFile = (req: Request, res: Response, next: NextFunction) => {
+  bulkGestureUpload.single("file")(req, res, (error) => {
+    if (error) {
+      return res
+        .status(
+          error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE"
+            ? 413
+            : 400,
+        )
+        .json({ success: false, error: error.message });
+    }
+    return next();
+  });
+};
+
+router.post(
+  "/bulk",
+  uploadLimiter,
+  authenticate,
+  requireRole("TEACHER", "ADMIN"),
+  parseBulkGestureFile,
+  async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: "Select a .json or .csv file to import",
+      });
+    }
+    let rows: Array<
+      PremadeGestureInput & {
+        wordKey: string;
+        translations: Record<string, string>;
+      }
+    > = [];
+    try {
+      const entries = parsePremadeGestureImport(
+        req.file.originalname,
+        req.file.buffer.toString("utf8"),
+      );
+      if (entries.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "Import file must include at least one gesture",
+        });
+      }
+      rows = entries.map((entry) => {
+        const wordKey = normalizeGestureKey(entry.gestureLabel);
+        if (!wordKey) {
+          throw new Error(`Invalid gesture label "${entry.gestureLabel}"`);
+        }
+        return {
+          ...entry,
+          wordKey,
+          translations: {
+            English: entry.englishWord,
+            Tagalog: entry.tagalogWord,
+            Cebuano: entry.cebuanoWord,
+          },
+        };
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Invalid import file",
+      });
+    }
+    const keys = rows.map((row) => row.wordKey);
+    if (new Set(keys).size !== keys.length) {
+      return res.status(400).json({
+        success: false,
+        error: "The import contains duplicate gesture labels",
+      });
+    }
+
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.gesture.createMany({
+          data: rows.map((row) => ({
+            word: row.gestureLabel,
+            wordKey: row.wordKey,
+            language: "English",
+            translations: row.translations,
+            aliases: [
+              ...new Set(
+                [
+                  row.gestureLabel,
+                  row.englishWord,
+                  row.tagalogWord,
+                  row.cebuanoWord,
+                ].filter(Boolean),
+              ),
+            ],
+            landmarks: row.landmarks,
+          })),
+          skipDuplicates: true,
+        });
+        const registered = await tx.gesture.findMany({
+          where: { wordKey: { in: keys } },
+          select: {
+            id: true,
+            wordKey: true,
+            aliases: true,
+            translations: true,
+          },
+        });
+        const byKey = new Map(registered.map((gesture) => [gesture.wordKey, gesture]));
+
+        for (const row of rows) {
+          const current = byKey.get(row.wordKey);
+          if (!current) continue;
+          const existingTranslations = parseGestureTranslations(
+            current.translations,
+          );
+          await tx.gesture.update({
+            where: { id: current.id },
+            data: {
+              translations: {
+                ...existingTranslations,
+                ...Object.fromEntries(
+                  Object.entries(row.translations).filter(([, value]) => value),
+                ),
+              },
+              aliases: [
+                ...new Set([
+                  ...current.aliases,
+                  row.gestureLabel,
+                  row.englishWord,
+                  row.tagalogWord,
+                  row.cebuanoWord,
+                ].filter(Boolean)),
+              ],
+              landmarks: row.landmarks,
+            },
+          });
+        }
+
+        const assets = rows.flatMap((row) => {
+          const gesture = byKey.get(row.wordKey);
+          return row.imageUrl && gesture
+            ? [{
+                gestureId: gesture.id,
+                word: row.gestureLabel,
+                file: row.imageUrl,
+                type: "image",
+                isPublished: true,
+              }]
+            : [];
+        });
+        if (assets.length > 0) {
+          const existingAssets = await tx.signAsset.findMany({
+            where: {
+              gestureId: { in: assets.map((asset) => asset.gestureId) },
+              file: { in: assets.map((asset) => asset.file) },
+            },
+            select: { gestureId: true, file: true },
+          });
+          const existingKeys = new Set(
+            existingAssets.map((asset) => `${asset.gestureId}:${asset.file}`),
+          );
+          const newAssets = assets.filter(
+            (asset) => !existingKeys.has(`${asset.gestureId}:${asset.file}`),
+          );
+          if (newAssets.length > 0) {
+            await tx.signAsset.createMany({ data: newAssets, skipDuplicates: true });
+          }
+        }
+        return { imported: rows.length, assets: assets.length };
+      });
+      clearStatsCache();
+      return res.status(201).json({ success: true, ...result });
+    } catch (error) {
+      console.error("Bulk gesture import failed:", error);
+      return res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to import gestures",
+      });
+    }
+  },
+);
+
+router.get("/templates", authenticate, async (_req, res) => {
+  try {
+    const templates = await prisma.gesture.findMany({
+      where: { isActive: true, landmarks: { not: Prisma.DbNull } },
+      select: {
+        id: true,
+        word: true,
+        aliases: true,
+        translations: true,
+        landmarks: true,
+      },
+    });
+    return res.json({ success: true, templates });
+  } catch (error) {
+    console.error("Could not load hand landmark templates:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Could not load hand landmark templates",
+    });
+  }
+});
 
 // Phase 2 of the CNN plan: gestureType is a per-WORD decision, not
 // per-recording — fusion later gates on it per word, so every recording
@@ -101,6 +325,8 @@ router.post("/", authenticate, requireRole("TEACHER", "ADMIN"), async (req, res)
       frameCount = 0,
       description = "",
       handCropUrl,
+      translations: rawTranslations,
+      aliases: rawAliases,
     } = req.body;
     if (!word || typeof word !== "string" || !word.trim()) {
       return res.status(400).json({
@@ -108,6 +334,19 @@ router.post("/", authenticate, requireRole("TEACHER", "ADMIN"), async (req, res)
         error: "Word is required",
       });
     }
+    if (!normalizeGestureKey(word)) {
+      return res.status(400).json({
+        success: false,
+        error: "Word must contain at least one letter or number",
+      });
+    }
+    if (typeof language !== "string" || !language.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "Language is required",
+      });
+    }
+    const normalizedLanguage = language.trim();
     if (!features || typeof features !== "object") {
       return res.status(400).json({
         success: false,
@@ -118,6 +357,16 @@ router.post("/", authenticate, requireRole("TEACHER", "ADMIN"), async (req, res)
       return res.status(400).json({
         success: false,
         error: "handCropUrl must be a string",
+      });
+    }
+    if (
+      rawAliases !== undefined &&
+      (!Array.isArray(rawAliases) ||
+        rawAliases.some((alias: unknown) => typeof alias !== "string"))
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "aliases must be an array of strings",
       });
     }
     const gestureType = normalizeGestureType(rawGestureType);
@@ -141,17 +390,26 @@ router.post("/", authenticate, requireRole("TEACHER", "ADMIN"), async (req, res)
         error: `"${trimmedWord}" already has recordings saved as "${normalizeGestureType(existingForWord.gestureType)}" — a word can't mix static and dynamic recordings.`,
       });
     }
-    const gesture = await prisma.signGesture.create({
-      data: {
+    const gesture = await prisma.$transaction(async (tx) => {
+      const registryEntry = await syncGestureRegistry(tx, {
         word: trimmedWord,
-        language,
-        gestureType,
-        features,
-        sequence,
-        frameCount,
-        description,
-        handCropUrl: handCropUrl || null,
-      },
+        language: normalizedLanguage,
+        aliases: rawAliases,
+        translations: parseGestureTranslations(rawTranslations),
+      });
+      return tx.signGesture.create({
+        data: {
+          word: trimmedWord,
+          language: normalizedLanguage,
+          gestureType,
+          features,
+          sequence,
+          frameCount,
+          description,
+          handCropUrl: handCropUrl || null,
+          gestureId: registryEntry.id,
+        },
+      });
     });
     clearStatsCache();
     return res.status(201).json({
@@ -512,11 +770,22 @@ router.put("/:id", authenticate, requireRole("TEACHER", "ADMIN"), async (req, re
         }
       }
     }
-    const gesture = await prisma.signGesture.update({
-      where: {
-        id,
-      },
-      data,
+    const gesture = await prisma.$transaction(async (tx) => {
+      if (typeof data.word === "string" && data.word.trim()) {
+        const current = await tx.signGesture.findUnique({
+          where: { id },
+          select: { language: true },
+        });
+        const registryEntry = await syncGestureRegistry(tx, {
+          word: data.word,
+          language: data.language ?? current?.language,
+        });
+        data.gestureId = registryEntry.id;
+      }
+      return tx.signGesture.update({
+        where: { id },
+        data,
+      });
     });
     // Rebuild recognition statistics only when recognition data changes.
     const recognitionFields = [

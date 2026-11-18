@@ -10,4 +10,11 @@ export interface SignAsset {
   word: string;
   file: string;
   type: string;
+  isPublished?: boolean;
+  aliases?: string[];
+  translations?: Record<string, string>;
+  gesture?: {
+    aliases: string[];
+    translations: Record<string, string>;
+  } | null;
 }

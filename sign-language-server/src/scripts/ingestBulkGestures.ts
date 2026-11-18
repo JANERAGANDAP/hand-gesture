@@ -5,6 +5,7 @@ import {
   extractFeatures,
   GestureFeatures,
 } from "../utils/featureExtractor.shared";
+import { syncGestureRegistry } from "../utils/gestureRegistry";
 const RAW_LANDMARKS_DIR = path.join(process.cwd(), "raw_landmarks");
 interface RawLandmarkFile {
   word: string;
@@ -110,16 +111,23 @@ async function ingestGestureFile(filePath: string) {
     };
   }
   const aggregatedFeatures = averageFeatureFrames(sequence);
-  await prisma.signGesture.create({
-    data: {
+  await prisma.$transaction(async (tx) => {
+    const registryEntry = await syncGestureRegistry(tx, {
       word: raw.word,
       language: "FSL",
-      gestureType: "dynamic",
-      features: aggregatedFeatures,
-      sequence: sequence as any,
-      frameCount: sequence.length,
-      description: buildSourceDescription(raw.sourceVideo),
-    },
+    });
+    await tx.signGesture.create({
+      data: {
+        word: raw.word,
+        language: "FSL",
+        gestureType: "dynamic",
+        features: aggregatedFeatures,
+        sequence: sequence as any,
+        frameCount: sequence.length,
+        description: buildSourceDescription(raw.sourceVideo),
+        gestureId: registryEntry.id,
+      },
+    });
   });
   console.log(`  Saved "${raw.word}" with ${sequence.length} usable frames.\n`);
   return {

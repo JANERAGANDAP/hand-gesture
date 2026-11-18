@@ -30,6 +30,7 @@ const phraseMap: Record<string, Record<string, string>> = {
     drink: "drink",
   },
   Tagalog: {
+    red: "pula",
     hello: "kumusta",
     hi: "kumusta",
     thank: "salamat",
@@ -89,6 +90,7 @@ const phraseMap: Record<string, Record<string, string>> = {
     "im sorry": "humihingi ako ng pasensya",
   },
   Cebuano: {
+    red: "pula",
     hello: "kumusta",
     hi: "kumusta",
     thank: "salamat",

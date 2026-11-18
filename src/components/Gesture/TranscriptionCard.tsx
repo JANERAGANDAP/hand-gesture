@@ -2,12 +2,14 @@ import React from "react";
 interface Props {
   text: string;
   translatedText?: string;
+  targetLanguage?: string;
   mode?: "gesture" | "speech";
   isActive?: boolean;
 }
 const TranscriptionCard: React.FC<Props> = ({
   text,
   translatedText,
+  targetLanguage = "English",
   mode = "gesture",
 }) => {
   const isGestureMode = mode === "gesture";
@@ -52,6 +54,14 @@ const TranscriptionCard: React.FC<Props> = ({
                 if ("speechSynthesis" in window) {
                   window.speechSynthesis.cancel();
                   const utterance = new SpeechSynthesisUtterance(translatedText || text);
+                  const languageCodes: Record<string, string> = {
+                    English: "en-US",
+                    Tagalog: "fil-PH",
+                    Cebuano: "ceb-PH",
+                    Ilocano: "fil-PH",
+                    Bikolano: "fil-PH",
+                  };
+                  utterance.lang = languageCodes[targetLanguage] ?? "en-US";
                   window.speechSynthesis.speak(utterance);
                 }
               }}

@@ -51,7 +51,7 @@ async function main() {
   const dirArg = process.argv.find((a) => a.startsWith("--dir="));
   const backupDir = path.resolve(dirArg ? dirArg.slice(6) : "../supabase-files");
 
-  const rows = await prisma.speechSign.findMany({ select: { id: true, file: true } });
+  const rows = await prisma.signAsset.findMany({ select: { id: true, file: true } });
   const ready: { id: number; key: string; localPath: string }[] = [];
   const notSupabase: string[] = [];
   const missingLocally: string[] = [];
@@ -106,7 +106,7 @@ async function main() {
       notVerified.push(item.id);
       continue;
     }
-    await prisma.speechSign.update({
+    await prisma.signAsset.update({
       where: { id: item.id },
       data: { file: publicObjectUrl(PUBLIC_BUCKET, fullKey) },
     });

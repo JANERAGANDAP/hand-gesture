@@ -31,6 +31,7 @@ export const translations: Record<string, Record<string, string>> = {
     dance: "DANCE",
   },
   Cebuano: {
+    red: "pula",
     detecting: "Nag-detect...",
     hello: "Kumusta",
     peace: "Kalma",
@@ -62,6 +63,7 @@ export const translations: Record<string, Record<string, string>> = {
     dance: "Sayaw",
   },
   Tagalog: {
+    red: "pula",
     detecting: "Nagde-detect...",
     hello: "Kumusta",
     peace: "Kapayapaan",
