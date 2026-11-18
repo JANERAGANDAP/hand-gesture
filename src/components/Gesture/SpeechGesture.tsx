@@ -173,6 +173,46 @@ const normalizeForMatch = (value: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+function getTargetLanguageLabel(asset: SignAsset, targetLanguage: string) {
+  const translations = {
+    ...asset.translations,
+    ...asset.gesture?.translations,
+  };
+  const translated = Object.entries(translations).find(
+    ([name, value]) =>
+      name.toLowerCase() === targetLanguage.toLowerCase() &&
+      typeof value === "string" &&
+      value.trim(),
+  )?.[1];
+  if (typeof translated === "string") return translated;
+
+  const assetWord = normalizeForMatch(asset.word);
+  const canonicalWord = Object.values(keywordMap)
+    .map((map) =>
+      Object.entries(map).find(
+        ([alias]) => normalizeForMatch(alias) === assetWord,
+      )?.[1],
+    )
+    .find((value): value is string => Boolean(value));
+  const targetMap = keywordMap[targetLanguage] ?? keywordMap.English;
+  const canonicalAlias =
+    canonicalWord &&
+    Object.entries(targetMap).find(
+      ([alias, canonical]) =>
+        normalizeForMatch(alias) === normalizeForMatch(canonicalWord) &&
+        normalizeForMatch(canonical) === normalizeForMatch(canonicalWord),
+    )?.[0];
+  const targetAlias =
+    targetLanguage.toLowerCase() !== "english" &&
+    canonicalWord &&
+    Object.entries(targetMap).find(
+      ([alias, canonical]) =>
+        normalizeForMatch(canonical) === normalizeForMatch(canonicalWord) &&
+        normalizeForMatch(alias) !== normalizeForMatch(canonicalWord),
+    )?.[0];
+  return targetAlias ?? canonicalAlias ?? asset.word;
+}
+
 function oneEditAway(left: string, right: string): boolean {
   if (Math.abs(left.length - right.length) > 1) return false;
   let leftIndex = 0;
@@ -351,6 +391,14 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
       aliases.forEach((alias) => {
         const normalizedAlias = normalizeForMatch(String(alias));
         if (normalizedAlias) libraryAliases.set(normalizedAlias, canonicalWord);
+      });
+    });
+    Object.values(keywordMap).forEach((aliases) => {
+      Object.entries(aliases).forEach(([alias, canonicalWord]) => {
+        const normalizedAlias = normalizeForMatch(alias);
+        if (normalizedAlias && !libraryAliases.has(normalizedAlias)) {
+          libraryAliases.set(normalizedAlias, canonicalWord);
+        }
       });
     });
     const libraryWords = new Set(libraryAliases.keys());
@@ -1195,6 +1243,12 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
             ...micButtonStyle,
             opacity: signsLoaded ? 1 : 0.5,
             cursor: signsLoaded ? "pointer" : "not-allowed",
+            minHeight: 50,
+            minWidth: 140,
+            justifyContent: "center",
+            padding: "13px 24px",
+            fontSize: 15,
+            borderRadius: 16,
           }}
         >
           <span style={styles.micIcon}>{isListening ? "⏹" : "🎤"}</span>
@@ -1296,7 +1350,9 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
                   style={styles.signMedia}
                 />
               )}
-              <p style={styles.signLabel}>{currentAsset.word}</p>
+              <p style={styles.signLabel}>
+                {getTargetLanguageLabel(currentAsset, language)}
+              </p>
             </div>
           </div>
         ) : currentWord && /^[a-z]$/.test(currentWord) ? (
@@ -1432,12 +1488,16 @@ const styles = {
   } as React.CSSProperties,
   queueButton: {
     border: 0,
-    borderRadius: 10,
-    padding: "8px 16px",
-    background: "#9bd8bd",
-    color: "#1f2937",
+    borderRadius: 14,
+    padding: "10px 20px",
+    background: "linear-gradient(135deg, #71c7a2, #53ad85)",
+    color: "#123c30",
     fontWeight: 700,
     cursor: "pointer",
+    fontSize: 14,
+    minWidth: 88,
+    minHeight: 46,
+    boxShadow: "0 4px 12px rgba(31,122,92,0.16)",
   } as React.CSSProperties,
   sequenceBar: {
     display: "flex",

@@ -934,14 +934,16 @@ const styles = {
     fontStyle: "italic",
   } as React.CSSProperties,
   sentenceButton: {
-    border: "1px solid var(--pearl-border, rgba(15,23,42,0.12))",
-    borderRadius: 999,
-    padding: "7px 12px",
-    color: "#1f2937",
-    background: "#f8fafc",
-    fontSize: 12,
+    border: "1px solid rgba(31,122,92,0.22)",
+    borderRadius: 14,
+    padding: "11px 18px",
+    color: "#174b3a",
+    background: "linear-gradient(180deg, #f3fbf7, #e8f5ee)",
+    fontSize: 14,
     fontWeight: 700,
     cursor: "pointer",
+    minHeight: 46,
+    boxShadow: "0 3px 10px rgba(31,122,92,0.08)",
   } as React.CSSProperties,
 };
 export default VideoViewport;

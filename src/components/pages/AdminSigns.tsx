@@ -547,6 +547,9 @@ const AdminSigns = () => {
                       muted
                       style={{
                         width: "100%",
+                        height: "clamp(320px, 58vh, 560px)",
+                        objectFit: "contain",
+                        background: "#0f172a",
                         borderRadius: "10px",
                       }}
                     />
@@ -556,8 +559,9 @@ const AdminSigns = () => {
                       alt="Preview"
                       style={{
                         width: "100%",
-                        maxHeight: "220px",
+                        height: "clamp(320px, 58vh, 560px)",
                         objectFit: "contain",
+                        background: "var(--pearl-surface-muted)",
                         borderRadius: "10px",
                       }}
                     />

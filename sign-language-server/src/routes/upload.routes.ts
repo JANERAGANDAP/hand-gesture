@@ -499,6 +499,64 @@ router.post(
     });
   }
 });
+router.put(
+  "/:id/image",
+  authenticate,
+  requireRole("TEACHER", "ADMIN"),
+  handleUpload("file"),
+  async (req: AuthedRequest, res) => {
+    let rawId: string | string[] | undefined = req.params.id;
+    if (Array.isArray(rawId)) rawId = rawId[0];
+    const id = rawId === undefined ? NaN : Number(rawId);
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({ error: "Valid numeric id is required" });
+    }
+    if (!req.file || !normalizeMimeType(req.file.mimetype).startsWith("image/")) {
+      return res.status(400).json({ error: "An image file is required" });
+    }
+
+    try {
+      const existing = await prisma.signAsset.findUnique({ where: { id } });
+      if (!existing) {
+        return res.status(404).json({ error: "Sign not found" });
+      }
+
+      const fileType = normalizeMimeType(req.file.mimetype);
+      const objectKey = `${SIGNS_PREFIX}${randomUUID()}${MIME_EXTENSIONS[fileType]}`;
+      await putObject(PUBLIC_BUCKET, objectKey, req.file.buffer, fileType);
+
+      let updated;
+      try {
+        updated = await prisma.signAsset.update({
+          where: { id },
+          data: {
+            file: publicObjectUrl(PUBLIC_BUCKET, objectKey),
+            type: fileType,
+          },
+        });
+      } catch (error) {
+        await deleteObjects(PUBLIC_BUCKET, [objectKey]);
+        throw error;
+      }
+
+      const oldKey = keyFromUrl(existing.file, PUBLIC_BUCKET);
+      if (oldKey && oldKey !== objectKey) {
+        await deleteObjects(PUBLIC_BUCKET, [oldKey]);
+      }
+
+      return res.json({
+        success: true,
+        id: updated.id,
+        word: updated.word,
+        file: updated.file,
+        type: updated.type,
+      });
+    } catch (error) {
+      console.error("Sign image replacement failed:", error);
+      return res.status(500).json({ error: "Failed to replace sign image" });
+    }
+  },
+);
 // Fixing whitespace-only issues on an existing upload's word text (see
 // signWordText.ts / the health-check endpoint in signs.routes.ts) —
 // TEACHER or ADMIN, same as the publish toggle above. Intentionally only

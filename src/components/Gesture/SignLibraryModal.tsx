@@ -1,5 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import { apiClient, uploadSignAsset } from "../../services/api";
+import {
+  apiClient,
+  replaceSignAssetImage,
+  uploadSignAsset,
+} from "../../services/api";
 import { resolveApiUrl } from "../../config";
 import type { SignAsset } from "./types";
 
@@ -33,18 +37,21 @@ interface SignLibraryModalProps {
   onClose: () => void;
   mode: "gesture" | "speech";
   language?: string;
-  // Called after a successful record/upload submit, so the parent can
-  // refresh SpeechGesture's word list without a page reload — see
+  canEditImages: boolean;
+  // Called after a successful record/upload or image edit, so the parent
+  // can refresh SpeechGesture's word list without a page reload — see
   // refreshSignsVersion in SpeechGesture.tsx.
   onSignAdded?: () => void;
 }
 
 type RecordState = "idle" | "requesting" | "live" | "recording" | "recorded" | "error";
+type EditCameraState = "idle" | "requesting" | "live" | "captured" | "error";
 
 const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   onClose,
   mode,
   language,
+  canEditImages,
   onSignAdded,
 }) => {
   const [assets, setAssets] = useState<SignAsset[]>([]);
@@ -70,6 +77,13 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   const recordedMimeRef = useRef<string>("video/webm");
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [editingAsset, setEditingAsset] = useState<SignAsset | null>(null);
+  const [editCameraState, setEditCameraState] =
+    useState<EditCameraState>("idle");
+  const [editImageFile, setEditImageFile] = useState<File | null>(null);
+  const [editPreviewUrl, setEditPreviewUrl] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const editVideoRef = useRef<HTMLVideoElement | null>(null);
 
   // Upload-a-sign panel (mode === "speech")
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -126,6 +140,22 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!editPreviewUrl) return;
+    return () => URL.revokeObjectURL(editPreviewUrl);
+  }, [editPreviewUrl]);
+
+  useEffect(() => {
+    if (editCameraState !== "live" || !streamRef.current || !editVideoRef.current) {
+      return;
+    }
+    editVideoRef.current.srcObject = streamRef.current;
+    void editVideoRef.current.play().catch((err: unknown) => {
+      console.error("Could not start the image-edit camera preview:", err);
+      setEditError("The camera preview could not start. Try again.");
+    });
+  }, [editCameraState]);
 
   const resetAddPanel = () => {
     stopCameraTracks();
@@ -298,6 +328,104 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     void submitAsset(selectedFile);
   };
 
+  const startEditCamera = async () => {
+    setEditError(null);
+    setEditCameraState("requesting");
+    try {
+      streamRef.current = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false,
+      });
+      setEditCameraState("live");
+    } catch (err) {
+      console.error("Camera access for sign image editing failed:", err);
+      setEditError(
+        "Couldn't access your camera — check the browser's camera permission and try again.",
+      );
+      setEditCameraState("error");
+    }
+  };
+
+  const captureEditImage = async () => {
+    const video = editVideoRef.current;
+    if (!video?.videoWidth || !video.videoHeight) {
+      setEditError("The camera is not ready yet. Please wait and try again.");
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setEditError("This browser cannot capture an image from the camera.");
+      return;
+    }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (captured) =>
+            captured
+              ? resolve(captured)
+              : reject(new Error("Could not capture the camera image.")),
+          "image/jpeg",
+          0.9,
+        );
+      });
+      const file = new File([blob], `sign-image-${Date.now()}.jpg`, {
+        type: "image/jpeg",
+      });
+      setEditImageFile(file);
+      setEditPreviewUrl(URL.createObjectURL(file));
+      setEditError(null);
+      stopCameraTracks();
+      setEditCameraState("captured");
+    } catch (err) {
+      console.error("Could not capture the sign image:", err);
+      setEditError(
+        err instanceof Error ? err.message : "Could not capture the image.",
+      );
+    }
+  };
+
+  const cancelImageEdit = () => {
+    stopCameraTracks();
+    setEditingAsset(null);
+    setEditCameraState("idle");
+    setEditImageFile(null);
+    setEditPreviewUrl(null);
+    setEditError(null);
+  };
+
+  const saveEditedImage = async () => {
+    if (!editingAsset || !editImageFile) return;
+    setSubmitting(true);
+    setEditError(null);
+    try {
+      const updated = await replaceSignAssetImage(editingAsset.id, editImageFile);
+      setAssets((current) =>
+        current.map((asset) =>
+          asset.id === updated.id
+            ? { ...asset, file: updated.file, type: updated.type }
+            : asset,
+        ),
+      );
+      setSubmitSuccess(`The image for "${updated.word}" was updated.`);
+      cancelImageEdit();
+      onSignAdded?.();
+      setTimeout(() => setSubmitSuccess(null), 4000);
+    } catch (err) {
+      console.error("Sign image update failed:", err);
+      setEditError(
+        err instanceof Error
+          ? err.message
+          : "Image update failed. Check your connection and try again.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const filtered = assets.filter((a) =>
     a.word.toLowerCase().includes(search.trim().toLowerCase()),
   );
@@ -380,7 +508,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
             </div>
           </div>
 
-          {!showAddPanel && (
+          {!showAddPanel && !editingAsset && (
             <input
               type="text"
               value={search}
@@ -399,7 +527,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
             />
           )}
 
-          {submitSuccess && !showAddPanel && (
+          {submitSuccess && !showAddPanel && !editingAsset && (
             <p
               style={{
                 margin: "10px 0 0",
@@ -415,7 +543,93 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
           )}
         </div>
 
-        {showAddPanel ? (
+        {editingAsset ? (
+          <div style={{ overflowY: "auto", flex: 1, padding: "1.25rem 1.5rem" }}>
+            <h6 style={{ margin: "0 0 12px", color: "var(--pearl-text, #1f2937)" }}>
+              Replace image for “{editingAsset.word}”
+            </h6>
+            <p style={{ color: "#6b7280", fontSize: 13 }}>
+              Take a new photo with your camera. The existing sign entry and translations will stay the same.
+            </p>
+            {editCameraState === "requesting" && (
+              <p style={{ fontSize: 13, color: "#6b7280" }}>Requesting camera access…</p>
+            )}
+            {editCameraState === "live" && (
+              <div>
+                <video
+                  ref={editVideoRef}
+                  muted
+                  playsInline
+                  style={{
+                    width: "100%",
+                    maxWidth: 640,
+                    height: "clamp(320px, 58vh, 560px)",
+                    objectFit: "cover",
+                    borderRadius: 16,
+                    background: "#000",
+                    display: "block",
+                    margin: "0 auto 12px",
+                  }}
+                />
+                <button onClick={captureEditImage} style={primaryButtonStyle}>
+                  Take photo
+                </button>
+              </div>
+            )}
+            {editCameraState === "captured" && editPreviewUrl && (
+              <div>
+                <img
+                  src={editPreviewUrl}
+                  alt={`New image for ${editingAsset.word}`}
+                  style={{
+                    width: "100%",
+                    maxWidth: 640,
+                    height: "clamp(320px, 58vh, 560px)",
+                    objectFit: "contain",
+                    borderRadius: 12,
+                    display: "block",
+                    margin: "0 auto 12px",
+                  }}
+                />
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    onClick={() => {
+                      setEditPreviewUrl(null);
+                      setEditImageFile(null);
+                      void startEditCamera();
+                    }}
+                    style={secondaryButtonStyle}
+                  >
+                    Retake
+                  </button>
+                  <button
+                    onClick={() => void saveEditedImage()}
+                    disabled={submitting}
+                    style={primaryButtonStyle}
+                  >
+                    {submitting ? "Saving…" : "Save image"}
+                  </button>
+                </div>
+              </div>
+            )}
+            {(editCameraState === "idle" || editCameraState === "error") && (
+              <button onClick={() => void startEditCamera()} style={primaryButtonStyle}>
+                {editCameraState === "error" ? "Try camera again" : "Turn on camera"}
+              </button>
+            )}
+            {editError && (
+              <p role="alert" style={{ color: "#ef4444", fontSize: 13, marginTop: 12 }}>
+                {editError}
+              </p>
+            )}
+            <button
+              onClick={cancelImageEdit}
+              style={{ ...secondaryButtonStyle, marginTop: 16, display: "block" }}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : showAddPanel ? (
           <div style={{ overflowY: "auto", flex: 1, padding: "1.25rem 1.5rem" }}>
             <div style={{ display: "flex", gap: "10px", marginBottom: "14px" }}>
               <input
@@ -502,8 +716,11 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                       playsInline
                       style={{
                         width: "100%",
-                        maxWidth: 480,
-                        borderRadius: 12,
+                        maxWidth: 640,
+                        height: "clamp(320px, 58vh, 560px)",
+                        objectFit: "contain",
+                        background: "#0f172a",
+                        borderRadius: 16,
                         display: "block",
                         margin: "0 auto 12px",
                       }}
@@ -543,7 +760,14 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                         src={selectedPreviewUrl}
                         controls
                         playsInline
-                        style={{ width: "100%", maxWidth: 480, borderRadius: 12 }}
+                        style={{
+                          width: "100%",
+                          maxWidth: 640,
+                          height: "clamp(320px, 58vh, 560px)",
+                          objectFit: "contain",
+                          background: "#0f172a",
+                          borderRadius: 16,
+                        }}
                       />
                     ) : (
                       <img
@@ -660,6 +884,25 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                     >
                       {asset.word}
                     </p>
+                    {canEditImages && asset.type?.startsWith("image/") && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditError(null);
+                          setEditingAsset(asset);
+                          setEditCameraState("idle");
+                        }}
+                        style={{
+                          ...secondaryButtonStyle,
+                          display: "block",
+                          width: "calc(100% - 20px)",
+                          margin: "0 10px 10px",
+                          padding: "7px 10px",
+                        }}
+                      >
+                        Edit image
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

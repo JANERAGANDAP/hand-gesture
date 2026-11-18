@@ -1037,7 +1037,7 @@ const styles = {
   cameraCard: {
     position: "relative",
     width: "100%",
-    height: "490px",
+    height: "clamp(520px, 72vh, 700px)",
     background: "#0b0b14",
     borderRadius: 20,
     overflow: "hidden",

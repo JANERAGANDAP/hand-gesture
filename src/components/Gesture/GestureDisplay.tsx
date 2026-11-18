@@ -304,6 +304,7 @@ const GestureDisplay: React.FC = () => {
           onClose={() => setShowLibrary(false)}
           mode={mode}
           language={activeLang}
+          canEditImages={user?.role === "ADMIN" || user?.role === "TEACHER"}
           onSignAdded={() => setSignLibraryVersion((v) => v + 1)}
         />
       )}

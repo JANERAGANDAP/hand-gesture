@@ -36,6 +36,8 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
       <div className="d-flex align-items-center w-100 w-md-auto justify-content-between justify-content-md-start">
         <div className="d-flex align-items-center">
           <button
+            type="button"
+            aria-label={sidebarOpen ? "Close navigation" : "Open navigation"}
             className="btn me-3"
             onClick={toggleSidebar}
             style={{
@@ -43,6 +45,10 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
               color: "var(--pearl-text, #1f2937)",
               border: "1px solid var(--pearl-border, rgba(15,23,42,0.09))",
               boxShadow: "0 2px 6px rgba(15,23,42,0.06)",
+              width: 46,
+              height: 46,
+              borderRadius: 14,
+              fontSize: 20,
             }}
           >
             {sidebarOpen ? "✕" : "☰"}
@@ -90,16 +96,20 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
       </div>
 
       {}
-      <div className="d-flex flex-column flex-sm-row gap-2 gap-sm-3 align-items-stretch align-items-sm-center w-100 w-md-auto">
+      <div
+        className="d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center w-100 w-md-auto"
+        style={{ gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}
+      >
         {}
         <div
           className="d-flex"
           style={{
             background: "var(--pearl-surface, #fff)",
             borderRadius: "999px",
-            padding: "4px",
+            padding: "5px",
             border: "1px solid var(--pearl-border, rgba(15,23,42,0.09))",
-            width: "100%",
+            width: "min(100%, 300px)",
+            minHeight: 54,
             justifyContent: "space-between",
             boxShadow: "0 2px 6px rgba(15,23,42,0.05)",
           }}
@@ -108,10 +118,10 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
             onClick={() => onModeChange("gesture")}
             style={{
               flex: 1,
-              padding: "6px 10px",
+              padding: "10px 18px",
               borderRadius: "999px",
               border: "none",
-              fontSize: "12px",
+              fontSize: "14px",
               fontWeight: 700,
               cursor: "pointer",
               background:
@@ -121,6 +131,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
                   ? "var(--pastel-text-on-pastel, #1f2937)"
                   : "var(--pearl-text-muted, #6b7280)",
               transition: "all 0.2s ease",
+              minHeight: 44,
             }}
           >
             ✋ Gesture
@@ -130,10 +141,10 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
             onClick={() => onModeChange("speech")}
             style={{
               flex: 1,
-              padding: "6px 10px",
+              padding: "10px 18px",
               borderRadius: "999px",
               border: "none",
-              fontSize: "12px",
+              fontSize: "14px",
               fontWeight: 700,
               cursor: "pointer",
               background:
@@ -143,6 +154,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
                   ? "var(--pastel-text-on-pastel, #1f2937)"
                   : "var(--pearl-text-muted, #6b7280)",
               transition: "all 0.2s ease",
+              minHeight: 44,
             }}
           >
             🎤 Speech
@@ -151,12 +163,17 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
 
         {mode === "speech" && (
           <button
-            className="btn px-4 rounded-pill small fw-bold w-100 w-sm-auto"
+            className="btn w-100 w-sm-auto"
             onClick={onShowLibrary}
             style={{
               background: "var(--pearl-surface-muted, #fbf9f5)",
               color: "var(--pearl-text, #1f2937)",
               border: "1px solid var(--pearl-border, rgba(15,23,42,0.09))",
+              borderRadius: 14,
+              minHeight: 46,
+              padding: "10px 18px",
+              fontSize: 14,
+              fontWeight: 700,
             }}
           >
             📚 LIBRARY
@@ -165,12 +182,17 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
 
         {}
         <button
-          className="btn px-4 rounded-pill small fw-bold w-100 w-sm-auto"
+          className="btn w-100 w-sm-auto"
           onClick={onShowHistory}
           style={{
             background: "var(--pearl-surface-muted, #fbf9f5)",
             color: "var(--pearl-text, #1f2937)",
             border: "1px solid var(--pearl-border, rgba(15,23,42,0.09))",
+            borderRadius: 14,
+            minHeight: 46,
+            padding: "10px 18px",
+            fontSize: 14,
+            fontWeight: 700,
           }}
         >
           HISTORY
@@ -179,7 +201,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
         {}
         {userRole && userRole !== "STUDENT" && onManageSigns && (
           <button
-            className="btn px-3 rounded-pill small fw-bold w-100 w-sm-auto"
+            className="btn w-100 w-sm-auto"
             onClick={onManageSigns}
             style={{
               background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
@@ -187,6 +209,11 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
               border: "none",
               boxShadow: "0 2px 8px rgba(124, 58, 237, 0.3)",
               whiteSpace: "nowrap",
+              borderRadius: 14,
+              minHeight: 46,
+              padding: "10px 18px",
+              fontSize: 14,
+              fontWeight: 700,
             }}
           >
             📹 Manage & Record Signs
@@ -194,13 +221,18 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
         )}
 
         <button
-          className="btn px-4 rounded-pill small fw-bold w-100 w-sm-auto"
+          className="btn w-100 w-sm-auto"
           onClick={onLogout}
           title={userName ? `Signed in as ${userName}` : undefined}
           style={{
             background: "var(--pastel-coral, #f3b3ae)",
             color: "#8a2f2a",
             border: "none",
+            borderRadius: 14,
+            minHeight: 46,
+            padding: "10px 18px",
+            fontSize: 14,
+            fontWeight: 700,
           }}
         >
           LOGOUT
@@ -210,11 +242,16 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
         {mode === "gesture" && (
           <button
             onClick={onToggleCapture}
-            className="btn px-4 rounded-pill small fw-bold w-100 w-sm-auto"
+            className="btn w-100 w-sm-auto"
             style={{
-              minWidth: "150px",
+              minWidth: "170px",
+              minHeight: 50,
               transition: "all 0.2s ease",
               border: "none",
+              borderRadius: 14,
+              padding: "12px 20px",
+              fontSize: 14,
+              fontWeight: 700,
               color: "var(--pastel-text-on-pastel, #1f2937)",
               background: isCapturing
                 ? "var(--pastel-coral, #f3b3ae)"

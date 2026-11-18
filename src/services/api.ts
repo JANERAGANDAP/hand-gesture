@@ -145,6 +145,29 @@ export async function uploadSignAsset(
   }
 }
 
+export async function replaceSignAssetImage(id: number, file: File) {
+  const uploadFile = await compressSignImage(file);
+  const formData = new FormData();
+  formData.append("file", uploadFile);
+  const response = await fetch(buildUrl(`/upload/${id}/image`), {
+    method: "PUT",
+    headers: authHeaders(),
+    body: formData,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.success) {
+    throw new Error(body.error || body.message || `HTTP ${response.status}`);
+  }
+  invalidateSignLibraryCache();
+  return body as {
+    success: true;
+    id: number;
+    word: string;
+    file: string;
+    type: string;
+  };
+}
+
 async function handle(response: Response) {
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
