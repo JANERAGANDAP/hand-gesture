@@ -6,7 +6,8 @@
 // the camera restarts.
 declare const Holistic: any;
 
-const MEDIAPIPE_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/holistic/";
+export const MEDIAPIPE_CDN =
+  "https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/";
 
 // Cached so every caller waits on the same single load.
 let holisticPromise: Promise<any> | null = null;
@@ -19,7 +20,8 @@ export function loadHolistic(): Promise<any> {
       throw new Error("MediaPipe Holistic script is not loaded");
     }
     const instance = new Holistic({
-      locateFile: (file: string) => `${MEDIAPIPE_CDN}${file}`,
+      locateFile: (file: string) =>
+        `${MEDIAPIPE_CDN}${file.replace(/^\/+/, "")}`,
     });
     instance.setOptions({
       modelComplexity: 0,

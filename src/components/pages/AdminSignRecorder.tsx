@@ -279,7 +279,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         }
         holistic = new Holistic({
           locateFile: (f: string) =>
-            `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${f}`,
+            `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${f.replace(/^\/+/, "")}`,
         });
         holistic.setOptions({
           modelComplexity: 1,
@@ -562,7 +562,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
     preloadYoloHandDetector();
     const holistic = new Holistic({
       locateFile: (file: string) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`,
+        `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file.replace(/^\/+/, "")}`,
     });
     holistic.setOptions({
       modelComplexity: 0,

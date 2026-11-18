@@ -32,7 +32,8 @@ declare const Holistic: new (config: {
   locateFile: (fileName: string) => string;
 }) => HolisticInstance;
 
-const MEDIAPIPE_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/holistic/";
+const MEDIAPIPE_CDN =
+  "https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/";
 // MediaPipe's tracker refines its hand region from the previous frame, so a
 // first pass on a cold start can miss a hand that a second pass finds.
 const MAX_DETECTION_PASSES = 3;
@@ -88,7 +89,8 @@ export async function extractFeaturesFromImage(
     throw new Error("MediaPipe Holistic is not loaded yet");
   }
   const holistic = new Holistic({
-    locateFile: (fileName: string) => `${MEDIAPIPE_CDN}${fileName}`,
+    locateFile: (fileName: string) =>
+      `${MEDIAPIPE_CDN}${fileName.replace(/^\/+/, "")}`,
   });
   // Not real-time, so favor accuracy: full-complexity model, and no
   // temporal smoothing (there is no previous frame to smooth against).

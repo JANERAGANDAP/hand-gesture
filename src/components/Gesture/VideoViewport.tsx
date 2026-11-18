@@ -18,9 +18,6 @@ import {
 } from "../../utils/captureQuality";
 import {
 } from "../../utils/handCrop";
-import {
-  preloadYoloHandDetector,
-} from "../../utils/yoloHandDetector";
 import { loadHolistic } from "../../utils/holisticLoader";
 // TEMPORARY DIAGNOSTIC — logs the movement signal that gates live
 // recognition, to check whether real signing speed actually clears
@@ -146,23 +143,8 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   useEffect(() => {
     languageRef.current = language;
   }, [language]);
-  // Start downloading/compiling the hand-tracking model as soon as this
-  // component mounts (before the user presses start), so the first
-  // detection is not delayed by a cold model load.
   useEffect(() => {
-    let cancelled = false;
     setModelStatus("loading");
-    loadHolistic()
-      .then(() => {
-        if (!cancelled) setModelStatus("ready");
-      })
-      .catch((error) => {
-        console.error("Hand-tracking model failed to load:", error);
-        if (!cancelled) setModelStatus("error");
-      });
-    return () => {
-      cancelled = true;
-    };
   }, [modelRetryKey]);
   const [sentence, setSentence] = useState<string[]>([]);
   const [confidence, setConfidence] = useState<number>(0);
@@ -258,14 +240,8 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       null;
     let cam: any = null;
     let stopped = false;
-    // Kick off the YOLO model fetch in parallel with Holistic init (no-op
-    // if YOLO_HAND_DETECTOR_CONFIG.ENABLED is false) so the first live
-    // hand-crop capture isn't stalled behind a cold model load.
-    preloadYoloHandDetector();
     const start = async () => {
-      // Reuses the shared, already-initialized model (see holisticLoader).
       try {
-        holistic = await loadHolistic();
         const { FilesetResolver, HandLandmarker } = await import(
           "@mediapipe/tasks-vision"
         );
@@ -275,16 +251,18 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           runningMode: "VIDEO",
           numHands: 2,
         });
+        if (stopped) {
+          handLandmarker.close();
+          return;
+        }
+        setModelStatus("ready");
       } catch (error) {
-        console.error("Hand-tracking model failed to load:", error);
+        console.error("MediaPipe Hands failed to load:", error);
         if (!stopped) {
           setModelStatus("error");
-          showToastRef.current(
-            "MediaPipe Hands could not load; using the existing recognition fallback.",
-            "error",
-          );
+          showToastRef.current("MediaPipe Hands failed to load.", "error");
         }
-        if (!holistic) return;
+        return;
       }
       if (stopped) return;
       const handleRecognitionResult = (result: any) => {
@@ -370,7 +348,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           setPreviewWord(null);
         }
       };
-      holistic.onResults((results: any) => {
+      const handleHolisticResults = (results: any) => {
         if (stopped) return;
         const pose = results.poseLandmarks || [];
         const left = results.leftHandLandmarks || [];
@@ -469,41 +447,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           right,
           results.faceLandmarks || [],
         );
-        if (handLandmarker && landmarkTemplatesRef.current.length > 0) {
-          try {
-            const handResults = handLandmarker.detectForVideo(
-              results.image,
-              performance.now(),
-            );
-            const localMatches = (handResults.landmarks ?? [])
-              .map((landmarks) =>
-                matchLandmarkTemplate(
-                  landmarks,
-                  landmarkTemplatesRef.current,
-                  0.82,
-                ),
-              )
-              .filter(
-                (match): match is NonNullable<typeof match> => match !== null,
-              )
-              .sort((leftMatch, rightMatch) =>
-                rightMatch.confidence - leftMatch.confidence,
-              );
-            const localMatch = localMatches[0];
-            if (localMatch) {
-              handleRecognitionResult(
-                {
-                  recognized: true,
-                  word: localMatch.word,
-                  confidence: localMatch.confidence,
-                },
-              );
-              return;
-            }
-          } catch (error) {
-            console.error("Local landmark matching failed:", error);
-          }
-        }
         if (!rawFeatures) return;
         const features = smootherRef.current.smooth(rawFeatures);
         wristHistoryRef.current.push(wristSnapshot(features));
@@ -599,13 +542,93 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           .finally(() => {
             isRecognizingRef.current = false;
           });
-      });
+      };
+      void loadHolistic()
+        .then((instance) => {
+          if (stopped) return;
+          holistic = instance;
+          holistic.onResults(handleHolisticResults);
+        })
+        .catch((error) => {
+          console.warn(
+            "MediaPipe Holistic fallback is unavailable; local landmark recognition remains active.",
+            error,
+          );
+        });
       cam = new Camera(videoRef.current, {
         onFrame: async () => {
-          if (!stopped && holistic) {
-            await holistic.send({
-              image: videoRef.current,
-            });
+          const video = videoRef.current;
+          if (stopped || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+            return;
+          }
+          try {
+            const handResults = handLandmarker!.detectForVideo(
+              video,
+              performance.now(),
+            );
+            const handLandmarks = handResults.landmarks ?? [];
+            if (handLandmarks.length === 0) {
+              setConfidence(0);
+              stabilityTrackerRef.current.reset();
+              setPreviewWord(null);
+              if (
+                autoSpeakRef.current &&
+                sentenceBufferRef.current.length > 0 &&
+                sentenceTimerRef.current === null
+              ) {
+                sentenceTimerRef.current = setTimeout(() => {
+                  const bufferedWords = sentenceBufferRef.current;
+                  if (bufferedWords.length > 0) {
+                    onGestureDetectedRef.current?.(
+                      buildSmartSentence(bufferedWords),
+                      languageRef.current,
+                    );
+                    sentenceBufferRef.current = [];
+                    setSentence([]);
+                  }
+                  sentenceTimerRef.current = null;
+                }, AUTO_SPEAK_IDLE_MS);
+              }
+            } else {
+              if (sentenceTimerRef.current) {
+                clearTimeout(sentenceTimerRef.current);
+                sentenceTimerRef.current = null;
+              }
+              const matches = handLandmarks
+                .map((landmarks) =>
+                  matchLandmarkTemplate(
+                    landmarks,
+                    landmarkTemplatesRef.current,
+                    0.82,
+                  ),
+                )
+                .filter(
+                  (match): match is NonNullable<typeof match> => match !== null,
+                )
+                .sort((leftMatch, rightMatch) =>
+                  rightMatch.confidence - leftMatch.confidence,
+                );
+              const localMatch = matches[0];
+              if (localMatch) {
+                handleRecognitionResult({
+                  recognized: true,
+                  word: localMatch.word,
+                  confidence: localMatch.confidence,
+                });
+              } else {
+                stabilityTrackerRef.current.reset();
+                setPreviewWord(null);
+              }
+            }
+          } catch (error) {
+            console.error("MediaPipe hand detection failed:", error);
+          }
+          if (holistic) {
+            try {
+              await holistic.send({ image: video });
+            } catch (error) {
+              console.error("Holistic recognition fallback failed:", error);
+            }
           }
         },
         width: 640,
@@ -623,9 +646,9 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       }
       cam?.stop();
       handLandmarker?.close();
-      // The model is shared and kept alive for the next start; only detach
-      // this run's result handler instead of closing the model.
-      holistic?.onResults(() => {});
+      if (holistic) {
+        holistic.onResults(() => {});
+      }
     };
   }, [isCapturing, modelRetryKey]);
   const speakSentence = () => {
