@@ -17,13 +17,24 @@ import { translateText } from "../../services/api";
 import { warmRecognition } from "../../services/recognitionApi";
 import { RECOGNITION_UI_CONFIG } from "../../config/recognitionConfig";
 import { shouldSpeakGesture } from "../../utils/gestureStability";
+import { HAND_LANDMARKER_RESTART_KEY } from "../../utils/holisticLoader";
 import type { HistoryEntry } from "./types";
 type Language = "English" | "Cebuano" | "Tagalog" | "Ilocano" | "Bikolano";
 type Mode = "gesture" | "speech";
 const GestureDisplay: React.FC = () => {
   const [activeLang, setActiveLang] = useState<Language>("English");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(() => {
+    try {
+      const shouldResume =
+        sessionStorage.getItem(HAND_LANDMARKER_RESTART_KEY) === "true";
+      if (shouldResume) sessionStorage.removeItem(HAND_LANDMARKER_RESTART_KEY);
+      return shouldResume;
+    } catch (error) {
+      console.error("Could not restore live recognition after reload:", error);
+      return false;
+    }
+  });
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);

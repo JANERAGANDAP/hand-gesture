@@ -7,6 +7,7 @@ import { GestureStabilityTracker } from "../../utils/gestureStability";
 import { matchLandmarkTemplate } from "../../utils/landmarkMatcher.js";
 import { API_ROOT } from "../../config";
 import { authHeaders } from "../../services/api";
+import { HAND_LANDMARKER_RESTART_KEY } from "../../utils/holisticLoader";
 declare const Camera: any;
 const AUTO_SPEAK_IDLE_MS = 2500;
 const LANDMARK_WASM_URL =
@@ -152,6 +153,34 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   }, [isCapturing]);
   useEffect(() => {
     if (!isCapturing || !videoRef.current) return;
+    if ("Holistic" in window && typeof window.Holistic !== "undefined") {
+      try {
+        if (sessionStorage.getItem(HAND_LANDMARKER_RESTART_KEY) !== "true") {
+          sessionStorage.setItem(HAND_LANDMARKER_RESTART_KEY, "true");
+          window.location.reload();
+          return;
+        }
+      } catch (error) {
+        console.error("Could not isolate the MediaPipe runtimes:", error);
+        setModelStatus("error");
+        showToastRef.current(
+          "Reload the page before starting live recognition.",
+          "error",
+        );
+        return;
+      }
+      setModelStatus("error");
+      showToastRef.current(
+        "Legacy MediaPipe is still active. Reload the page and try again.",
+        "error",
+      );
+      return;
+    }
+    try {
+      sessionStorage.removeItem(HAND_LANDMARKER_RESTART_KEY);
+    } catch (error) {
+      console.error("Could not reset the MediaPipe runtime marker:", error);
+    }
     let handLandmarker: import("@mediapipe/tasks-vision").HandLandmarker | null =
       null;
     let cam: any = null;

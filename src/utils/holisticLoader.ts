@@ -4,6 +4,8 @@
 
 export const MEDIAPIPE_CDN =
   "https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/";
+export const HAND_LANDMARKER_RESTART_KEY =
+  "hand-landmarker-restart-after-legacy-holistic";
 
 declare global {
   interface Window {
