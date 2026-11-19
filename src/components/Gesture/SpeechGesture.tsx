@@ -12,6 +12,8 @@ interface SpeechGestureProps {
   // /api/signs without needing a page reload — see the loadSigns effect
   // below, which depends on this value.
   refreshSignsVersion?: number;
+  translatedText?: string;
+  translationVersion?: number;
 }
 const keywordMap: Record<string, Record<string, string>> = {
   English: {
@@ -241,6 +243,8 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
   onSpeechDetected,
   onSignsDetected,
   refreshSignsVersion,
+  translatedText = "",
+  translationVersion = 0,
 }) => {
   const { showToast } = useToast();
   const [isListening, setIsListening] = useState(false);
@@ -269,6 +273,9 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
   const transcriptStartIndexRef = useRef(0);
   // Latest results.length, so the fade timer knows where to move the start.
   const latestResultsLengthRef = useRef(0);
+  const committedWordCountRef = useRef(0);
+  const pendingWordsRef = useRef<string[]>([]);
+  const pendingFlushTimerRef = useRef<number | null>(null);
   // Tracks how many words from the start of the live transcript have
   // already been permanently resolved into a matched sign (or force-
   // resolved at a flush timeout). Deliberately does NOT advance for
@@ -281,7 +288,6 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
   // be seen again. Always re-slicing from this cursor keeps re-reading
   // the live word(s) fresh from the current transcript until they're
   // actually committed.
-  const committedWordCountRef = useRef(0);
   // Guards against the SpeechRecognition API re-delivering the same final
   // result in a later onresult call (common on short, isolated utterances).
   // Without this, the same word gets matched and enqueued twice.
@@ -306,9 +312,7 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
   const [isTranscriptFading, setIsTranscriptFading] = useState(false);
   const transcriptFadeStartTimerRef = useRef<number | null>(null);
   const transcriptFadeTimerRef = useRef<number | null>(null);
-  const pendingWordsRef = useRef<string[]>([]);
   const lookupRequestIdRef = useRef(0);
-  const pendingFlushTimerRef = useRef<number | null>(null);
   const sentenceWordsRef = useRef<string[]>([]);
   const sentenceTimerRef = useRef<number | null>(null);
   const languageRef = useRef(language);
@@ -655,7 +659,8 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
     }
     return result;
   };
-  const enqueueWords = (words: string[]) => {
+  const enqueueWords = (words: string[], isTranslatedOutput = false) => {
+    if (!isTranslatedOutput) return;
     if (words.length === 0) return;
     lookupRequestIdRef.current += 1;
     setUnmatchedWord(null);
@@ -707,23 +712,108 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
               : character;
           });
       });
-  const queueTypedSentence = () => {
-    const normalized = normalizeForMatch(sentenceInput);
-    if (!normalized) return;
-    const wholeSentenceAsset = findLocalAsset(normalized);
-    const words = wholeSentenceAsset
-      ? [normalizeForMatch(wholeSentenceAsset.word)]
-      : fallbackLetters(normalized);
-    if (words.length === 0) return;
+  const translatedSequenceKeyRef = useRef("");
+  useEffect(() => {
+    if (translationVersion <= 0) return;
+    if (!translatedText.trim()) {
+      lookupRequestIdRef.current += 1;
+      wordQueueRef.current = [];
+      playbackSequenceRef.current = [];
+      setPlaybackSequence([]);
+      setPlaybackIndex(-1);
+      clearRevealTimer();
+      clearFadeStartTimer();
+      clearFadeTransitionTimer();
+      setCurrentWord(null);
+      setIsFading(false);
+      return;
+    }
+    if (!signsLoaded) return;
+
+    const sequenceKey = `${translationVersion}:${language}:${normalizeForMatch(translatedText)}`;
+    if (translatedSequenceKeyRef.current === sequenceKey) return;
+    translatedSequenceKeyRef.current = sequenceKey;
+    const requestId = ++lookupRequestIdRef.current;
     wordQueueRef.current = [];
+    playbackSequenceRef.current = [];
+    setPlaybackSequence([]);
+    setPlaybackIndex(-1);
     clearRevealTimer();
     clearFadeStartTimer();
     clearFadeTransitionTimer();
     setCurrentWord(null);
     setIsFading(false);
     setUnmatchedWord(null);
+
+    const resolveSequence = () => {
+      const words = normalizeForMatch(translatedText).split(" ").filter(Boolean);
+      const knownPhrases = [
+        ...Object.keys(keywordMap[language] ?? {}),
+        ...Object.keys(keywordMap.English),
+        ...dynamicAssetsRef.current.flatMap((asset) => [
+          asset?.word,
+          ...(Array.isArray(asset?.gesture?.aliases) ? asset.gesture.aliases : []),
+          ...(Array.isArray(asset?.aliases) ? asset.aliases : []),
+          ...Object.values(asset?.gesture?.translations ?? {}),
+        ]),
+      ]
+        .filter((phrase): phrase is string => typeof phrase === "string")
+        .map(normalizeForMatch)
+        .filter(Boolean);
+      const maxPhraseLength = Math.max(
+        1,
+        ...knownPhrases.map((phrase) => phrase.split(" ").length),
+      );
+      const sequence: string[] = [];
+
+      for (let index = 0; index < words.length; ) {
+        let matched: SignAsset | undefined;
+        let consumed = 1;
+        for (
+          let length = Math.min(maxPhraseLength, words.length - index);
+          length > 0;
+          length -= 1
+        ) {
+          const phrase = words.slice(index, index + length).join(" ");
+          matched = findLocalAsset(phrase);
+          if (!matched) {
+            const canonical = Object.entries(
+              keywordMap[language] ?? keywordMap.English,
+            ).find(
+              ([alias]) => normalizeForMatch(alias) === phrase,
+            )?.[1];
+            if (canonical) matched = findLocalAsset(canonical);
+          }
+          if (matched) {
+            consumed = length;
+            break;
+          }
+        }
+        if (matched) {
+          sequence.push(normalizeForMatch(matched.word));
+          index += consumed;
+        } else {
+          sequence.push(...fallbackLetters(words[index]));
+          index += 1;
+        }
+      }
+
+      if (requestId !== lookupRequestIdRef.current) return;
+      if (sequence.length === 0) {
+        setUnmatchedWord(translatedText);
+        return;
+      }
+      enqueueWords(sequence, true);
+      onSignsDetectedRef.current?.(sequence);
+    };
+
+    resolveSequence();
+  }, [translatedText, translationVersion, language, signsLoaded]);
+  const queueTypedSentence = () => {
+    const sentence = sentenceInput.trim();
+    if (!sentence) return;
     setSentenceInput("");
-    enqueueWords(words);
+    onSpeechDetectedRef.current?.(sentence, languageRef.current);
   };
   const resolveUnmatchedSpeech = async (text: string) => {
     const normalized = normalizeForMatch(text);
@@ -1382,7 +1472,11 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
         ) : (
           <div style={styles.emptyState}>
             <div style={styles.emptyIcon}>🎤</div>
-            <p style={styles.emptyText}>Speak to see your signs</p>
+            <p style={styles.emptyText}>
+              {translationVersion > 0 && !translatedText.trim()
+                ? "Translating speech before sign playback…"
+                : "Speak to see your signs"}
+            </p>
           </div>
         )}
 

@@ -47,6 +47,7 @@ const GestureDisplay: React.FC = () => {
     sourceLanguage: string;
   } | null>(null);
   const [translatedText, setTranslatedText] = useState("");
+  const [speechTranslationVersion, setSpeechTranslationVersion] = useState(0);
   const [guideOpen, setGuideOpen] = useState(true);
   const { showToast } = useToast();
   const { user, logout } = useAuth();
@@ -207,6 +208,7 @@ const GestureDisplay: React.FC = () => {
     }
     setTranslationInput(null);
     setTranslatedText("");
+    setSpeechTranslationVersion(0);
     setMode(newMode);
   };
   const handleGestureDetected = useCallback(
@@ -223,6 +225,7 @@ const GestureDisplay: React.FC = () => {
   const handleSpeechDetected = async (text: string) => {
     setSpeechText(text);
     setTranslatedText("");
+    setSpeechTranslationVersion((version) => version + 1);
     setTranslationInput({ text, sourceLanguage: "English" });
     addHistory(text, activeLang, "speech");
   };
@@ -282,6 +285,8 @@ const GestureDisplay: React.FC = () => {
                   language={activeLang}
                   onSpeechDetected={handleSpeechDetected}
                   refreshSignsVersion={signLibraryVersion}
+                  translatedText={translatedText}
+                  translationVersion={speechTranslationVersion}
                 />
 
                 <TranscriptionCard
