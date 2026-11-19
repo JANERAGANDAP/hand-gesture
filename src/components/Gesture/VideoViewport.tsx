@@ -15,6 +15,85 @@ const LANDMARK_WASM_URL =
 const HAND_LANDMARKER_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 const LANDMARK_CACHE_KEY = "gesture-landmark-templates-v1";
+const HAND_CONNECTIONS = [
+  [0, 1],
+  [1, 2],
+  [2, 3],
+  [3, 4],
+  [0, 5],
+  [5, 6],
+  [6, 7],
+  [7, 8],
+  [5, 9],
+  [9, 10],
+  [10, 11],
+  [11, 12],
+  [9, 13],
+  [13, 14],
+  [14, 15],
+  [15, 16],
+  [13, 17],
+  [17, 18],
+  [18, 19],
+  [19, 20],
+  [0, 17],
+] as const;
+const HAND_COLORS = ["#22d3ee", "#f472b6"];
+
+function drawHandLandmarkOverlay(
+  canvas: HTMLCanvasElement,
+  video: HTMLVideoElement,
+  hands: Array<Array<{ x: number; y: number }>>,
+) {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) return;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.clearRect(0, 0, width, height);
+
+  hands.forEach((landmarks, handIndex) => {
+    const color = HAND_COLORS[handIndex % HAND_COLORS.length];
+    context.lineWidth = Math.max(3, width / 220);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.strokeStyle = color;
+    context.shadowColor = "#0f172a";
+    context.shadowBlur = 5;
+
+    for (const [fromIndex, toIndex] of HAND_CONNECTIONS) {
+      const from = landmarks[fromIndex];
+      const to = landmarks[toIndex];
+      if (!from || !to) continue;
+      context.beginPath();
+      context.moveTo(from.x * width, from.y * height);
+      context.lineTo(to.x * width, to.y * height);
+      context.stroke();
+    }
+
+    for (const point of landmarks) {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+      context.beginPath();
+      context.arc(
+        point.x * width,
+        point.y * height,
+        Math.max(4, width / 150),
+        0,
+        Math.PI * 2,
+      );
+      context.fillStyle = "#f8fafc";
+      context.fill();
+      context.lineWidth = Math.max(2, width / 320);
+      context.strokeStyle = color;
+      context.stroke();
+    }
+  });
+}
+
 function normalizeConfidence(raw: number): number {
   const value = raw > 1 ? raw / 100 : raw;
   return Math.max(0, Math.min(1, value));
@@ -77,6 +156,8 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   }, [modelRetryKey]);
   const [sentence, setSentence] = useState<string[]>([]);
   const [confidence, setConfidence] = useState<number>(0);
+  const [handVisible, setHandVisible] = useState(false);
+  const handVisibleRef = useRef(false);
   const [previewWord, setPreviewWord] = useState<string | null>(null);
   const { showToast } = useToast();
   const onGestureDetectedRef = useRef(onGestureDetected);
@@ -136,6 +217,17 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   }, []);
   useEffect(() => {
     if (!isCapturing) {
+      handVisibleRef.current = false;
+      setHandVisible(false);
+      if (canvasRef.current) {
+        const context = canvasRef.current.getContext("2d");
+        context?.clearRect(
+          0,
+          0,
+          canvasRef.current.width,
+          canvasRef.current.height,
+        );
+      }
       setSentence([]);
       sentenceBufferRef.current = [];
       setConfidence(0);
@@ -298,6 +390,18 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
               performance.now(),
             );
             const handLandmarks = handResults.landmarks ?? [];
+            if (canvasRef.current) {
+              drawHandLandmarkOverlay(
+                canvasRef.current,
+                video,
+                handLandmarks as Array<Array<{ x: number; y: number }>>,
+              );
+            }
+            const foundHands = handLandmarks.length > 0;
+            if (handVisibleRef.current !== foundHands) {
+              handVisibleRef.current = foundHands;
+              setHandVisible(foundHands);
+            }
             if (handLandmarks.length === 0) {
               setConfidence(0);
               stabilityTrackerRef.current.reset();
@@ -364,6 +468,16 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
     start();
     return () => {
       stopped = true;
+      if (canvasRef.current) {
+        const context = canvasRef.current.getContext("2d");
+        context?.clearRect(
+          0,
+          0,
+          canvasRef.current.width,
+          canvasRef.current.height,
+        );
+      }
+      handVisibleRef.current = false;
       if (sentenceTimerRef.current) {
         clearTimeout(sentenceTimerRef.current);
         sentenceTimerRef.current = null;
@@ -436,6 +550,11 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
         )}
 
         <div style={styles.confidenceBadge(confidence)}>{confidence}%</div>
+        {modelStatus === "ready" && (
+          <div style={styles.handStatus}>
+            {handVisible ? "Hand landmarks detected" : "Show your hand in view"}
+          </div>
+        )}
 
       </div>
 
@@ -564,9 +683,24 @@ const styles = {
     inset: 0,
     width: "100%",
     height: "100%",
+    objectFit: "cover",
     pointerEvents: "none",
     zIndex: 2,
     transform: "scaleX(-1)",
+  } as React.CSSProperties,
+  handStatus: {
+    position: "absolute",
+    left: 16,
+    top: 16,
+    padding: "6px 11px",
+    borderRadius: 999,
+    color: "#f8fafc",
+    background: "rgba(15, 23, 42, 0.72)",
+    border: "1px solid rgba(255,255,255,0.28)",
+    fontSize: 12,
+    fontWeight: 700,
+    zIndex: 10,
+    pointerEvents: "none",
   } as React.CSSProperties,
   confidenceBadge: (value: number) =>
     ({

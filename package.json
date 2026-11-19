@@ -11,6 +11,8 @@
     "test": "node --test src/**/*.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1172.0",
+    "@aws-sdk/s3-request-presigner": "^3.1172.0",
     "@mediapipe/camera_utils": "^0.3.1675466862",
     "@mediapipe/drawing_utils": "^0.3.1675466124",
     "@mediapipe/hands": "^0.4.1675469240",
