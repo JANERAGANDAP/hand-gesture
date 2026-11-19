@@ -205,6 +205,8 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
   const wristHistoryRef = useRef<WristSnapshot[]>([]);
   const [captureWarning, setCaptureWarning] = useState<string | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
+  const [handDetected, setHandDetected] = useState(false);
+  const handDetectedRef = useRef(false);
   const [isRecording, setIsRecording] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -590,6 +592,13 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           drawSkeleton(ctx, results);
         }
+        const foundHand =
+          (results.leftHandLandmarks?.length ?? 0) > 0 ||
+          (results.rightHandLandmarks?.length ?? 0) > 0;
+        if (handDetectedRef.current !== foundHand) {
+          handDetectedRef.current = foundHand;
+          setHandDetected(foundHand);
+        }
         const features = extractFeatures(
           results.poseLandmarks,
           results.leftHandLandmarks,
@@ -785,6 +794,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
     void initializeCamera();
     return () => {
       stopped = true;
+      handDetectedRef.current = false;
       camera?.stop();
       holisticClosedRef.current = true;
       holistic?.close();
@@ -863,6 +873,9 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
 
           <div style={styles.topScrim} />
           <div style={styles.bottomScrim} />
+          <div style={styles.handStatus}>
+            {handDetected ? "Hand landmarks detected" : "Show your hand in view"}
+          </div>
 
           {captureWarning && (
             <div style={styles.captureWarningBanner}>⚠ {captureWarning}</div>
@@ -1071,9 +1084,24 @@ const styles = {
     left: 0,
     width: "100%",
     height: "100%",
+    objectFit: "cover",
     pointerEvents: "none",
     zIndex: 2,
     transform: "scaleX(-1)",
+  } as React.CSSProperties,
+  handStatus: {
+    position: "absolute",
+    top: 16,
+    right: 16,
+    zIndex: 12,
+    padding: "7px 12px",
+    borderRadius: 999,
+    color: "#f8fafc",
+    background: "rgba(15, 23, 42, 0.78)",
+    border: "1px solid rgba(255,255,255,0.28)",
+    fontSize: 12,
+    fontWeight: 700,
+    pointerEvents: "none",
   } as React.CSSProperties,
   topScrim: {
     position: "absolute",

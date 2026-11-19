@@ -45,6 +45,7 @@ const GestureDisplay: React.FC = () => {
   const [translationInput, setTranslationInput] = useState<{
     text: string;
     sourceLanguage: string;
+    speak: boolean;
   } | null>(null);
   const [translatedText, setTranslatedText] = useState("");
   const [speechTranslationVersion, setSpeechTranslationVersion] = useState(0);
@@ -151,7 +152,11 @@ const GestureDisplay: React.FC = () => {
         if (cancelled || requestId !== translationRequestIdRef.current) return;
         const output = result.translatedText || translationInput.text;
         setTranslatedText(output);
-        if (mode !== "gesture" || !("speechSynthesis" in window)) return;
+        if (
+          !translationInput.speak ||
+          mode !== "gesture" ||
+          !("speechSynthesis" in window)
+        ) return;
         const previousSpeech = lastGestureSpeechRef.current;
         const spokenAt = Date.now();
         if (
@@ -217,16 +222,31 @@ const GestureDisplay: React.FC = () => {
       if (!rawSentence) return;
       setGestureText(rawSentence);
       setTranslatedText("");
-      setTranslationInput({ text: rawSentence, sourceLanguage: "English" });
+      setTranslationInput({
+        text: rawSentence,
+        sourceLanguage: "English",
+        speak: true,
+      });
       addHistory(rawSentence, lang, "gesture");
     },
     [],
   );
+  const handleGestureWordDetected = useCallback((word: string) => {
+    const recognizedWord = word.trim();
+    if (!recognizedWord) return;
+    setGestureText(recognizedWord);
+    setTranslatedText("");
+    setTranslationInput({
+      text: recognizedWord,
+      sourceLanguage: "English",
+      speak: false,
+    });
+  }, []);
   const handleSpeechDetected = async (text: string) => {
     setSpeechText(text);
     setTranslatedText("");
     setSpeechTranslationVersion((version) => version + 1);
-    setTranslationInput({ text, sourceLanguage: "English" });
+    setTranslationInput({ text, sourceLanguage: "English", speak: false });
     addHistory(text, activeLang, "speech");
   };
   return (
@@ -270,6 +290,7 @@ const GestureDisplay: React.FC = () => {
                   language={activeLang}
                   isCapturing={isCapturing}
                   onGestureDetected={handleGestureDetected}
+                  onWordDetected={handleGestureWordDetected}
                 />
 
                 <TranscriptionCard

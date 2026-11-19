@@ -109,11 +109,13 @@ interface VideoViewportProps {
   language: Language;
   isCapturing: boolean;
   onGestureDetected?: (gestureName: string, language: string) => void;
+  onWordDetected?: (gestureName: string, language: string) => void;
 }
 const VideoViewport: React.FC<VideoViewportProps> = ({
   language,
   isCapturing,
   onGestureDetected,
+  onWordDetected,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -161,10 +163,14 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   const [previewWord, setPreviewWord] = useState<string | null>(null);
   const { showToast } = useToast();
   const onGestureDetectedRef = useRef(onGestureDetected);
+  const onWordDetectedRef = useRef(onWordDetected);
   const showToastRef = useRef(showToast);
   useEffect(() => {
     onGestureDetectedRef.current = onGestureDetected;
   }, [onGestureDetected]);
+  useEffect(() => {
+    onWordDetectedRef.current = onWordDetected;
+  }, [onWordDetected]);
   useEffect(() => {
     showToastRef.current = showToast;
   }, [showToast]);
@@ -351,6 +357,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
             sentenceBufferRef.current = updated;
             setSentence(updated);
           }
+          onWordDetectedRef.current?.(word, languageRef.current);
           showToastRef.current(`Recognized: ${word}`, "success");
         } else if (result?.warning !== "rate_limited") {
           // Phase 6 UNKNOWN path: only count this as a confident "I don't

@@ -47,7 +47,13 @@ const TranscriptionCard: React.FC<Props> = ({
               gap: "8px",
             }}
           >
-            <span>{isGestureMode ? "✋ Composed from Signs" : "🎤 Speech Recognized"}</span>
+            <span>
+              {isGestureMode
+                ? text.trim().split(/\s+/).length === 1
+                  ? "✋ Sign Recognized"
+                  : "✋ Composed from Signs"
+                : "🎤 Speech Recognized"}
+            </span>
             <button
               type="button"
               onClick={() => {
