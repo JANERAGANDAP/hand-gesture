@@ -553,6 +553,15 @@ router.put(
       });
     } catch (error) {
       console.error("Sign image replacement failed:", error);
+      if (
+        error instanceof Error &&
+        error.message.startsWith("Missing required object storage setting:")
+      ) {
+        return res.status(503).json({
+          error:
+            "Image storage is not configured for this API deployment. Set AWS_ENDPOINT_URL_S3, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY, then redeploy.",
+        });
+      }
       return res.status(500).json({ error: "Failed to replace sign image" });
     }
   },
