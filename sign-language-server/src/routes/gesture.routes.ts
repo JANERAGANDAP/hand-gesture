@@ -642,13 +642,34 @@ router.get(
       const summary = Array.from(byWord.values()).sort((a, b) =>
         a.word.localeCompare(b.word),
       );
+      let handCropWarning = false;
       const words = await Promise.all(
-        summary.map(async (w) => ({
-          ...w,
-          handCropUrl: await signHandCropUrl(w.handCropUrl),
-        })),
+        summary.map(async (w) => {
+          try {
+            return {
+              ...w,
+              handCropUrl: await signHandCropUrl(w.handCropUrl),
+            };
+          } catch (error) {
+            handCropWarning = true;
+            console.error(
+              `Could not sign the hand-crop image for recorded sign "${w.word}":`,
+              error,
+            );
+            return { ...w, handCropUrl: null };
+          }
+        }),
       );
-      res.json({ success: true, words });
+      res.json({
+        success: true,
+        words,
+        ...(handCropWarning
+          ? {
+              warning:
+                "Some recorded-sign thumbnails are unavailable. Configure object storage to display them.",
+            }
+          : {}),
+      });
     } catch (err) {
       console.error("Gesture summary error:", err);
       res.status(500).json({

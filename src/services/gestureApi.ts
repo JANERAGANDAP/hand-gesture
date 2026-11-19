@@ -185,6 +185,7 @@ export async function getGestureSummary(): Promise<{
   success: boolean;
   words: RecordedGestureSummary[];
   error?: string;
+  warning?: string;
 }> {
   try {
     const response = await apiClient.get<any>("/gestures/summary");

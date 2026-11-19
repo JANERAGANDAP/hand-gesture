@@ -54,6 +54,7 @@ const AdminSigns = () => {
     [],
   );
   const [recordedLoading, setRecordedLoading] = useState(true);
+  const [recordedWarning, setRecordedWarning] = useState<string | null>(null);
   const [healthCheck, setHealthCheck] = useState<{
     loading: boolean;
     flagged: { id: number; word: string; cleaned: string }[] | null;
@@ -71,8 +72,13 @@ const AdminSigns = () => {
   const loadRecordedSigns = () => {
     setRecordedLoading(true);
     getGestureSummary()
-      .then((res) => {
-        if (res.success) setRecordedWords(res.words);
+      .then((result) => {
+        if (result.success) {
+          setRecordedWords(result.words);
+          setRecordedWarning(result.warning ?? null);
+        } else {
+          setRecordedWarning(result.error ?? "Failed to load recorded signs.");
+        }
       })
       .finally(() => setRecordedLoading(false));
   };
@@ -677,6 +683,17 @@ const AdminSigns = () => {
       {activeTab === "record" && (
       <>
       <h5 style={{ marginBottom: "16px", fontWeight: 600 }}>Recorded Signs</h5>
+      {recordedWarning && (
+        <div
+          role="status"
+          className="alert alert-warning"
+          style={{ marginBottom: 16 }}
+        >
+          {recordedWarning} Set `AWS_ENDPOINT_URL_S3`, `AWS_REGION`,
+          `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` in the API
+          deployment to enable private image thumbnails.
+        </div>
+      )}
       <div
         style={{
           display: "grid",
