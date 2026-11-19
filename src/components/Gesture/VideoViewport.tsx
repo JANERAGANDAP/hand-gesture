@@ -4,96 +4,13 @@ import { useToast } from "../../contexts/ToastContext";
 import { buildSmartSentence } from "../../utils/sentenceBuilder";
 import { RECOGNITION_UI_CONFIG } from "../../config/recognitionConfig";
 import { GestureStabilityTracker } from "../../utils/gestureStability";
-import { matchLandmarkTemplate } from "../../utils/landmarkMatcher.js";
-import { API_ROOT } from "../../config";
-import { authHeaders } from "../../services/api";
-import { HAND_LANDMARKER_RESTART_KEY } from "../../utils/holisticLoader";
+import { extractFeatures } from "../../utils/featureExtractor";
+import { recognize } from "../../services/recognitionApi";
+import { loadHolisticScript } from "../../utils/holisticLoader";
+import { drawSkeleton } from "../../utils/drawSkeleton";
 declare const Camera: any;
 const AUTO_SPEAK_IDLE_MS = 2500;
-const LANDMARK_WASM_URL =
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/wasm";
-const HAND_LANDMARKER_MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const LANDMARK_CACHE_KEY = "gesture-landmark-templates-v1";
-const HAND_CONNECTIONS = [
-  [0, 1],
-  [1, 2],
-  [2, 3],
-  [3, 4],
-  [0, 5],
-  [5, 6],
-  [6, 7],
-  [7, 8],
-  [5, 9],
-  [9, 10],
-  [10, 11],
-  [11, 12],
-  [9, 13],
-  [13, 14],
-  [14, 15],
-  [15, 16],
-  [13, 17],
-  [17, 18],
-  [18, 19],
-  [19, 20],
-  [0, 17],
-] as const;
-const HAND_COLORS = ["#22d3ee", "#f472b6"];
-
-function drawHandLandmarkOverlay(
-  canvas: HTMLCanvasElement,
-  video: HTMLVideoElement,
-  hands: Array<Array<{ x: number; y: number }>>,
-) {
-  const width = video.videoWidth;
-  const height = video.videoHeight;
-  if (!width || !height) return;
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  const context = canvas.getContext("2d");
-  if (!context) return;
-  context.clearRect(0, 0, width, height);
-
-  hands.forEach((landmarks, handIndex) => {
-    const color = HAND_COLORS[handIndex % HAND_COLORS.length];
-    context.lineWidth = Math.max(3, width / 220);
-    context.lineCap = "round";
-    context.lineJoin = "round";
-    context.strokeStyle = color;
-    context.shadowColor = "#0f172a";
-    context.shadowBlur = 5;
-
-    for (const [fromIndex, toIndex] of HAND_CONNECTIONS) {
-      const from = landmarks[fromIndex];
-      const to = landmarks[toIndex];
-      if (!from || !to) continue;
-      context.beginPath();
-      context.moveTo(from.x * width, from.y * height);
-      context.lineTo(to.x * width, to.y * height);
-      context.stroke();
-    }
-
-    for (const point of landmarks) {
-      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
-      context.beginPath();
-      context.arc(
-        point.x * width,
-        point.y * height,
-        Math.max(4, width / 150),
-        0,
-        Math.PI * 2,
-      );
-      context.fillStyle = "#f8fafc";
-      context.fill();
-      context.lineWidth = Math.max(2, width / 320);
-      context.strokeStyle = color;
-      context.stroke();
-    }
-  });
-}
-
+const RECOGNITION_REQUEST_INTERVAL_MS = 750;
 function normalizeConfidence(raw: number): number {
   const value = raw > 1 ? raw / 100 : raw;
   return Math.max(0, Math.min(1, value));
@@ -144,8 +61,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   >("loading");
   // Bumped by the Retry button to re-run model loading and camera start.
   const [modelRetryKey, setModelRetryKey] = useState(0);
-  const landmarkTemplatesRef = useRef<any[]>([]);
-  const [landmarkTemplateCount, setLandmarkTemplateCount] = useState(0);
+  const [recognitionHint, setRecognitionHint] = useState("");
   const [autoSpeak, setAutoSpeak] = useState(true);
   // Latest language, read inside the camera effect so changing language
   // does not restart the camera or reload the hand-tracking model.
@@ -182,46 +98,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
     }
   }, [autoSpeak]);
   useEffect(() => {
-    let cancelled = false;
-    const loadTemplates = async () => {
-      try {
-        const cached = localStorage.getItem(LANDMARK_CACHE_KEY);
-        if (cached) {
-          const parsed: unknown = JSON.parse(cached);
-          if (Array.isArray(parsed)) {
-            landmarkTemplatesRef.current = parsed;
-            setLandmarkTemplateCount(parsed.length);
-          }
-        }
-      } catch (error) {
-        console.warn("Could not read cached gesture templates:", error);
-      }
-      try {
-        const response = await fetch(`${API_ROOT}/api/gestures/templates`, {
-          headers: authHeaders(),
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        if (cancelled || !Array.isArray(data.templates)) return;
-        landmarkTemplatesRef.current = data.templates;
-        setLandmarkTemplateCount(data.templates.length);
-        localStorage.setItem(
-          LANDMARK_CACHE_KEY,
-          JSON.stringify(data.templates),
-        );
-      } catch (error) {
-        console.error("Could not load browser gesture templates:", error);
-      }
-    };
-    void loadTemplates();
-    const refresh = () => void loadTemplates();
-    window.addEventListener("sign-library-updated", refresh);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("sign-library-updated", refresh);
-    };
-  }, []);
-  useEffect(() => {
     if (!isCapturing) {
       handVisibleRef.current = false;
       setHandVisible(false);
@@ -237,6 +113,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       setSentence([]);
       sentenceBufferRef.current = [];
       setConfidence(0);
+      setRecognitionHint("");
       setPreviewWord(null);
       stabilityTrackerRef.current.reset();
       unknownStreakRef.current = 0;
@@ -251,59 +128,35 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   }, [isCapturing]);
   useEffect(() => {
     if (!isCapturing || !videoRef.current) return;
-    if ("Holistic" in window && typeof window.Holistic !== "undefined") {
-      try {
-        if (sessionStorage.getItem(HAND_LANDMARKER_RESTART_KEY) !== "true") {
-          sessionStorage.setItem(HAND_LANDMARKER_RESTART_KEY, "true");
-          window.location.reload();
-          return;
-        }
-      } catch (error) {
-        console.error("Could not isolate the MediaPipe runtimes:", error);
-        setModelStatus("error");
-        showToastRef.current(
-          "Reload the page before starting live recognition.",
-          "error",
-        );
-        return;
-      }
-      setModelStatus("error");
-      showToastRef.current(
-        "Legacy MediaPipe is still active. Reload the page and try again.",
-        "error",
-      );
-      return;
-    }
-    try {
-      sessionStorage.removeItem(HAND_LANDMARKER_RESTART_KEY);
-    } catch (error) {
-      console.error("Could not reset the MediaPipe runtime marker:", error);
-    }
-    let handLandmarker: import("@mediapipe/tasks-vision").HandLandmarker | null =
-      null;
+    let holistic: any = null;
     let cam: any = null;
     let stopped = false;
+    let requestInFlight = false;
+    let lastRequestAt = 0;
+    let hasReceivedResults = false;
+    let startupTimer: ReturnType<typeof setTimeout> | null = null;
+    const recordedFrames: Array<{ timestamp: number; features: any }> = [];
     const start = async () => {
       try {
-        const { FilesetResolver, HandLandmarker } = await import(
-          "@mediapipe/tasks-vision"
-        );
-        const vision = await FilesetResolver.forVisionTasks(LANDMARK_WASM_URL);
-        handLandmarker = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: HAND_LANDMARKER_MODEL_URL },
-          runningMode: "VIDEO",
-          numHands: 2,
+        await loadHolisticScript();
+        if (stopped) return;
+        const Holistic = window.Holistic;
+        if (!Holistic) throw new Error("MediaPipe Holistic is unavailable");
+        holistic = new Holistic({
+          locateFile: (file: string) =>
+            `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file.replace(/^\/+/, "")}`,
         });
-        if (stopped) {
-          handLandmarker.close();
-          return;
-        }
-        setModelStatus("ready");
+        holistic.setOptions({
+          modelComplexity: 0,
+          smoothLandmarks: true,
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
       } catch (error) {
-        console.error("MediaPipe Hands failed to load:", error);
+        console.error("MediaPipe Holistic failed to load:", error);
         if (!stopped) {
           setModelStatus("error");
-          showToastRef.current("MediaPipe Hands failed to load.", "error");
+          showToastRef.current("MediaPipe face, pose, and hand tracking failed to load.", "error");
         }
         return;
       }
@@ -311,11 +164,14 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       const handleRecognitionResult = (result: any) => {
         const rawConfidence = Number(result?.confidence ?? 0);
         setConfidence(Math.round(normalizeConfidence(rawConfidence) * 100));
+        if (result?.warning === "rate_limited") {
+          setRecognitionHint("Recognition is busy. Keep holding the sign and try again shortly.");
+          return;
+        }
         if (result?.recognized && result.word) {
-          // Real progress toward a match — clear any UNKNOWN streak so it
-          // doesn't linger onscreen once the model has something to say.
           unknownStreakRef.current = 0;
-          if (isUnknown) setIsUnknown(false);
+          setIsUnknown(false);
+          setRecognitionHint("");
           const confidenceValue = Number(result.confidence ?? 0);
           if (!passesConfidenceGate(confidenceValue)) {
             stabilityTrackerRef.current.reset();
@@ -360,12 +216,24 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           onWordDetectedRef.current?.(word, languageRef.current);
           showToastRef.current(`Recognized: ${word}`, "success");
         } else if (result?.warning !== "rate_limited") {
-          // Phase 6 UNKNOWN path: only count this as a confident "I don't
-          // know this sign" when the model actually looked at real input
-          // and rejected it (low_confidence/low_match) — not when it's
-          // still building up training data, has no qualified candidates,
-          // or got no features at all. Those are "can't tell yet", not
-          // "tried and drew a blank", so they reset the streak instead.
+          if (result?.reason === "no_training_data") {
+            setRecognitionHint(
+              "No saved gestures are available yet. Record and save gestures first.",
+            );
+          } else if (result?.reason === "still_training") {
+            const remaining = Number(result.samplesNeeded ?? 0);
+            setRecognitionHint(
+              result.trainingWord
+                ? `“${result.trainingWord}” needs ${remaining} more recording${remaining === 1 ? "" : "s"} before it can be recognized.`
+                : "Saved gesture recordings are still being prepared for recognition.",
+            );
+          } else if (result?.reason === "request_failed") {
+            setRecognitionHint(
+              "Could not reach the recognition service. Check your connection and sign in again if needed.",
+            );
+          } else {
+            setRecognitionHint("");
+          }
           if (
             result?.reason === "low_confidence" ||
             result?.reason === "low_match"
@@ -385,96 +253,165 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           setPreviewWord(null);
         }
       };
-      cam = new Camera(videoRef.current, {
-        onFrame: async () => {
+      holistic.onResults(async (results: any) => {
+        if (stopped) return;
+        try {
           const video = videoRef.current;
-          if (stopped || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+          const canvas = canvasRef.current;
+          if (!video || !canvas) return;
+          const width = video.videoWidth || 640;
+          const height = video.videoHeight || 480;
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+          }
+          const context = canvas.getContext("2d");
+          context?.clearRect(0, 0, canvas.width, canvas.height);
+          if (context) drawSkeleton(context, results);
+
+          if (!hasReceivedResults) {
+            hasReceivedResults = true;
+            if (startupTimer) {
+              clearTimeout(startupTimer);
+              startupTimer = null;
+            }
+            setModelStatus("ready");
+          }
+          const handLandmarks = [
+            results.leftHandLandmarks,
+            results.rightHandLandmarks,
+          ];
+          const foundHands = handLandmarks.some(
+            (landmarks) => Array.isArray(landmarks) && landmarks.length > 0,
+          );
+          if (handVisibleRef.current !== foundHands) {
+            handVisibleRef.current = foundHands;
+            setHandVisible(foundHands);
+          }
+          const features = extractFeatures(
+            results.poseLandmarks,
+            results.leftHandLandmarks,
+            results.rightHandLandmarks,
+            results.faceLandmarks ?? [],
+          );
+          if (!features) {
+            setConfidence(0);
+            stabilityTrackerRef.current.reset();
+            setPreviewWord(null);
+            setRecognitionHint(
+              foundHands
+                ? "Keep your face, shoulders, and upper body in view so the sign can be recognized."
+                : "",
+            );
             return;
           }
-          try {
-            const handResults = handLandmarker!.detectForVideo(
-              video,
-              performance.now(),
-            );
-            const handLandmarks = handResults.landmarks ?? [];
-            if (canvasRef.current) {
-              drawHandLandmarkOverlay(
-                canvasRef.current,
-                video,
-                handLandmarks as Array<Array<{ x: number; y: number }>>,
-              );
-            }
-            const foundHands = handLandmarks.length > 0;
-            if (handVisibleRef.current !== foundHands) {
-              handVisibleRef.current = foundHands;
-              setHandVisible(foundHands);
-            }
-            if (handLandmarks.length === 0) {
-              setConfidence(0);
-              stabilityTrackerRef.current.reset();
-              setPreviewWord(null);
-              if (
-                autoSpeakRef.current &&
-                sentenceBufferRef.current.length > 0 &&
-                sentenceTimerRef.current === null
-              ) {
-                sentenceTimerRef.current = setTimeout(() => {
-                  const bufferedWords = sentenceBufferRef.current;
-                  if (bufferedWords.length > 0) {
-                    onGestureDetectedRef.current?.(
-                      buildSmartSentence(bufferedWords),
-                      languageRef.current,
-                    );
-                    sentenceBufferRef.current = [];
-                    setSentence([]);
-                  }
-                  sentenceTimerRef.current = null;
-                }, AUTO_SPEAK_IDLE_MS);
-              }
-            } else {
-              if (sentenceTimerRef.current) {
-                clearTimeout(sentenceTimerRef.current);
+          setRecognitionHint("");
+
+          recordedFrames.push({ timestamp: Date.now(), features });
+          if (recordedFrames.length > 30) recordedFrames.shift();
+          if (!foundHands) {
+            setConfidence(0);
+            stabilityTrackerRef.current.reset();
+            setPreviewWord(null);
+            if (
+              autoSpeakRef.current &&
+              sentenceBufferRef.current.length > 0 &&
+              sentenceTimerRef.current === null
+            ) {
+              sentenceTimerRef.current = setTimeout(() => {
+                const bufferedWords = sentenceBufferRef.current;
+                if (bufferedWords.length > 0) {
+                  onGestureDetectedRef.current?.(
+                    buildSmartSentence(bufferedWords),
+                    languageRef.current,
+                  );
+                  sentenceBufferRef.current = [];
+                  setSentence([]);
+                }
                 sentenceTimerRef.current = null;
+              }, AUTO_SPEAK_IDLE_MS);
+            }
+            return;
+          }
+          if (sentenceTimerRef.current) {
+            clearTimeout(sentenceTimerRef.current);
+            sentenceTimerRef.current = null;
+          }
+          const now = Date.now();
+          if (
+            requestInFlight ||
+            now - lastRequestAt < RECOGNITION_REQUEST_INTERVAL_MS
+          ) {
+            return;
+          }
+          requestInFlight = true;
+          lastRequestAt = now;
+          void recognize({
+            features,
+            sequence: recordedFrames.slice(-28),
+          })
+            .then((result) => {
+              if (!stopped) handleRecognitionResult(result);
+            })
+            .catch((error) => {
+              console.error("Could not recognize saved gestures:", error);
+              if (!stopped) {
+                setRecognitionHint("Could not reach gesture recognition. Check your connection and try again.");
               }
-              const matches = handLandmarks
-                .map((landmarks) =>
-                  matchLandmarkTemplate(
-                    landmarks,
-                    landmarkTemplatesRef.current,
-                    0.82,
-                  ),
-                )
-                .filter(
-                  (match): match is NonNullable<typeof match> => match !== null,
-                )
-                .sort((leftMatch, rightMatch) =>
-                  rightMatch.confidence - leftMatch.confidence,
+            })
+            .finally(() => {
+              requestInFlight = false;
+            });
+        } catch (error) {
+          console.error("Live gesture recognition failed:", error);
+          setRecognitionHint("Recognition encountered an error. Please try again.");
+        }
+      });
+      startupTimer = setTimeout(() => {
+        if (stopped || hasReceivedResults) return;
+        setModelStatus("error");
+        showToastRef.current(
+          "Face, pose, and hand tracking did not start. Check the network and retry.",
+          "error",
+        );
+      }, 20000);
+      try {
+        cam = new Camera(videoRef.current, {
+          onFrame: async () => {
+            const video = videoRef.current;
+            if (stopped || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+              return;
+            }
+            try {
+              await holistic.send({ image: video });
+            } catch (error) {
+              console.error("MediaPipe Holistic frame processing failed:", error);
+              if (!hasReceivedResults && !stopped) {
+                setModelStatus("error");
+                showToastRef.current(
+                  "Face, pose, and hand tracking failed to process camera frames.",
+                  "error",
                 );
-              const localMatch = matches[0];
-              if (localMatch) {
-                handleRecognitionResult({
-                  recognized: true,
-                  word: localMatch.word,
-                  confidence: localMatch.confidence,
-                });
-              } else {
-                stabilityTrackerRef.current.reset();
-                setPreviewWord(null);
               }
             }
-          } catch (error) {
-            console.error("MediaPipe hand detection failed:", error);
-          }
-        },
-        width: 640,
-        height: 480,
-        selfieMode: true,
-      });
-      await cam.start();
+          },
+          width: 640,
+          height: 480,
+          selfieMode: true,
+        });
+        await cam.start();
+      } catch (error) {
+        console.error("Could not start the live recognition camera:", error);
+        if (!stopped) {
+          setModelStatus("error");
+          showToastRef.current("Could not start the live recognition camera.", "error");
+        }
+      }
     };
-    start();
+    void start();
     return () => {
       stopped = true;
+      if (startupTimer) clearTimeout(startupTimer);
       if (canvasRef.current) {
         const context = canvasRef.current.getContext("2d");
         context?.clearRect(
@@ -485,12 +422,13 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
         );
       }
       handVisibleRef.current = false;
+      recordedFrames.length = 0;
       if (sentenceTimerRef.current) {
         clearTimeout(sentenceTimerRef.current);
         sentenceTimerRef.current = null;
       }
       cam?.stop();
-      handLandmarker?.close();
+      holistic?.close();
     };
   }, [isCapturing, modelRetryKey]);
   const speakSentence = () => {
@@ -532,7 +470,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       <div style={styles.header}>
         <h2 style={styles.title}>Live Gesture Recognition</h2>
         <span style={{ fontSize: 12, color: "var(--pearl-text-muted, #6b7280)" }}>
-          {landmarkTemplateCount} local MediaPipe templates
+          Matches saved gesture recordings
         </span>
       </div>
 
@@ -541,11 +479,13 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
         <canvas ref={canvasRef} style={styles.canvas} />
 
         {modelStatus === "loading" && (
-          <div style={styles.modelStatusOverlay}>Loading hand tracking…</div>
+          <div style={styles.modelStatusOverlay}>
+            Loading face, upper-body, and hand tracking…
+          </div>
         )}
         {modelStatus === "error" && (
           <div style={styles.modelStatusOverlay}>
-            Hand tracking failed to load.
+            Tracking failed to load.
             <button
               type="button"
               style={styles.retryButton}
@@ -628,6 +568,8 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
           >
             ❓ Sign not recognized
           </span>
+        ) : recognitionHint ? (
+          <span style={styles.recognitionHint}>{recognitionHint}</span>
         ) : (
           <span
             style={{
@@ -791,6 +733,13 @@ const styles = {
   previewWord: {
     color: "var(--pastel-mint-deep, #6fc09e)",
     fontStyle: "italic",
+  } as React.CSSProperties,
+  recognitionHint: {
+    display: "block",
+    color: "var(--pearl-text-muted, #6b7280)",
+    fontSize: 14,
+    fontWeight: 500,
+    lineHeight: 1.45,
   } as React.CSSProperties,
   sentenceButton: {
     border: "1px solid rgba(31,122,92,0.22)",

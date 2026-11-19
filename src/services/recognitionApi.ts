@@ -13,6 +13,8 @@ export interface RecognitionResult {
   alternatives?: RecognitionAlternative[];
   warning?: string;
   processingTime?: number;
+  trainingWord?: string | null;
+  samplesNeeded?: number | null;
   // Phase 6: why recognition failed, when it did. Previously computed by
   // the backend (recognition.routes.ts) but dropped here before it ever
   // reached a component — VideoViewport needs it to tell "still deciding"
@@ -70,6 +72,8 @@ export async function recognize(
       alternatives: data?.alternatives ?? [],
       warning: data?.warning,
       reason: data?.reason,
+      trainingWord: data?.trainingWord,
+      samplesNeeded: data?.samplesNeeded,
       processingTime,
     };
   } catch (error: any) {
@@ -78,6 +82,7 @@ export async function recognize(
       return {
         ...emptyResult,
         warning: "rate_limited",
+        reason: "rate_limited",
       };
     }
     const isAbort =
@@ -91,7 +96,10 @@ export async function recognize(
     } else {
       console.error("Recognition failed:", error);
     }
-    return emptyResult;
+    return {
+      ...emptyResult,
+      reason: "request_failed",
+    };
   }
 }
 
