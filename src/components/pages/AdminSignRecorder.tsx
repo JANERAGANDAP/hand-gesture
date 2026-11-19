@@ -205,6 +205,8 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
   const wristHistoryRef = useRef<WristSnapshot[]>([]);
   const [captureWarning, setCaptureWarning] = useState<string | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
+  const [isCameraReady, setIsCameraReady] = useState(false);
+  const cameraReadyRef = useRef(false);
   const [handDetected, setHandDetected] = useState(false);
   const handDetectedRef = useRef(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -223,7 +225,12 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
     setIsCameraOn(true);
   }, []);
   const startRecording = useCallback(async () => {
-    if (isRecording) return;
+    if (isRecording || !cameraReadyRef.current) {
+      if (!cameraReadyRef.current) {
+        updateLabel("Camera is still starting — try again in a moment");
+      }
+      return;
+    }
     updateLabel("Get Ready...");
     setRecordProgress(0);
     framesRef.current = [];
@@ -556,6 +563,9 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
   ]);
   useEffect(() => {
     if (!isCameraOn || !videoRef.current || !canvasRef.current) return;
+    holisticClosedRef.current = false;
+    cameraReadyRef.current = false;
+    setIsCameraReady(false);
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -772,7 +782,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         });
         camera = new Camera(video, {
           onFrame: async () => {
-            if (stopped || holisticClosedRef.current) return;
+            if (stopped || holisticClosedRef.current || !holistic) return;
             try {
               await holistic.send({
                 image: video,
@@ -786,15 +796,25 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
           selfieMode: true,
         });
         await camera.start();
+        if (!stopped && !holisticClosedRef.current) {
+          cameraReadyRef.current = true;
+          setIsCameraReady(true);
+          updateLabel("Waiting...");
+        }
       } catch (error) {
         console.error("Could not initialize the admin recording camera:", error);
+        cameraReadyRef.current = false;
+        if (!stopped) setIsCameraReady(false);
         updateLabel("Camera model failed to load — please retry");
       }
     };
     void initializeCamera();
     return () => {
       stopped = true;
+      cameraReadyRef.current = false;
+      setIsCameraReady(false);
       handDetectedRef.current = false;
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
       camera?.stop();
       holisticClosedRef.current = true;
       holistic?.close();
@@ -883,13 +903,15 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
 
           <button
             onClick={startRecording}
-            disabled={isRecording}
+            disabled={isRecording || !isCameraReady}
             style={styles.recordBtn(isRecording)}
           >
             <span style={styles.recordDot(isRecording)} />
             {isRecording
               ? `Recording ${recordProgress}/${RECORD_FRAMES}`
-              : "Record Gesture"}
+              : isCameraReady
+                ? "Record Gesture"
+                : "Starting Camera..."}
           </button>
 
           {isRecording && (
