@@ -3,7 +3,10 @@ export const RECOGNITION_UI_CONFIG = {
   // This prevents transitional hand motion (e.g. Moving from "I" to "hungry")
   // from falsely locking in a random sign.
   CONSECUTIVE_MATCH_THRESHOLD: 2,
-  CONFIDENCE_THRESHOLD: 0.8,
+  // Recognition API returns confidence as 0-100 and accepts matches at 45%.
+  // Keep the client gate aligned with that server threshold, otherwise valid
+  // backend matches in the 45-79% range are discarded before they reach text.
+  CONFIDENCE_THRESHOLD: 0.45,
   DETECTION_STABILITY_MS: 500,
   SPEECH_COOLDOWN_MS: 2500,
   REPEAT_DEBOUNCE_MS: 700,

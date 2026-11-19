@@ -14,6 +14,12 @@ test("gesture needs confidence, consecutive frames, and 500ms stability", () => 
   assert.equal(tracker.accepts("hello", 0.95, 900), false);
 });
 
+test("accepts backend-recognized gestures at its 45 percent minimum confidence", () => {
+  const tracker = new GestureStabilityTracker(0.45, 500, 2);
+  assert.equal(tracker.accepts("hello", 0.45, 0), false);
+  assert.equal(tracker.accepts("hello", 0.45, 500), true);
+});
+
 test("stability timer restarts when the predicted gesture changes", () => {
   const tracker = new GestureStabilityTracker(0.8, 500, 2);
   assert.equal(tracker.accepts("hello", 0.9, 0), false);
