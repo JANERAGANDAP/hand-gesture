@@ -64,3 +64,11 @@ The Dockerfile also runs the Express API as a Node service. Configure `DATABASE_
 ## Admin credentials
 
 Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` as deployment environment variables, using a strong unique password. Never commit credentials or put them in a tracked example file.
+
+To create a separate database-backed admin without changing the configured environment-admin login, run this from the repository root:
+
+```sh
+npm run admin:create --prefix sign-language-server -- superadmin@gmail.com
+```
+
+The command asks for the password twice without echoing it and requires at least 12 characters. Verify that the configured database is the intended one before running it. It will not modify an existing account or reuse the configured environment-admin email. For a production database, add `--confirm-production` after the email only after verifying the target.

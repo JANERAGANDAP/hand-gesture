@@ -1,9 +1,7 @@
 // src/components/Gesture/GestureDisplay.tsx
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { API_ROOT } from "../../config";
 import { authHeaders } from "../../services/api";
-import Sidebar from "./Sidebar";
 import TopNavbar from "./TopNavbar";
 import VideoViewport from "./VideoViewport";
 import TranscriptionCard from "./TranscriptionCard";
@@ -19,11 +17,13 @@ import { RECOGNITION_UI_CONFIG } from "../../config/recognitionConfig";
 import { shouldSpeakGesture } from "../../utils/gestureStability";
 import { HAND_LANDMARKER_RESTART_KEY } from "../../utils/holisticLoader";
 import type { HistoryEntry } from "./types";
-type Language = "English" | "Cebuano" | "Tagalog" | "Ilocano" | "Bikolano";
+import type { Language } from "../../types/language";
 type Mode = "gesture" | "speech";
-const GestureDisplay: React.FC = () => {
-  const [activeLang, setActiveLang] = useState<Language>("English");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+interface GestureDisplayProps {
+  activeLanguage: Language;
+}
+
+const GestureDisplay: React.FC<GestureDisplayProps> = ({ activeLanguage }) => {
   const [isCapturing, setIsCapturing] = useState(() => {
     try {
       const shouldResume =
@@ -47,12 +47,17 @@ const GestureDisplay: React.FC = () => {
     sourceLanguage: string;
     speak: boolean;
   } | null>(null);
-  const [translatedText, setTranslatedText] = useState("");
+  const [translationResult, setTranslationResult] = useState<{
+    language: Language;
+    text: string;
+  } | null>(null);
+  const translatedText =
+    translationResult?.language === activeLanguage ? translationResult.text : "";
   const [speechTranslationVersion, setSpeechTranslationVersion] = useState(0);
   const [guideOpen, setGuideOpen] = useState(true);
   const { showToast } = useToast();
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
+  const { user } = useAuth();
+  const activeLang = activeLanguage;
   const translationRequestIdRef = useRef(0);
   const lastGestureSpeechRef = useRef<{
     text: string;
@@ -66,28 +71,6 @@ const GestureDisplay: React.FC = () => {
     if (!isLoggedIn) return;
     void warmRecognition();
   }, [isLoggedIn]);
-  const languages = [
-    {
-      id: "English",
-      color: "#3b82f6",
-    },
-    {
-      id: "Cebuano",
-      color: "#f59e0b",
-    },
-    {
-      id: "Tagalog",
-      color: "#ef4444",
-    },
-    {
-      id: "Ilocano",
-      color: "#10b981",
-    },
-    {
-      id: "Bikolano",
-      color: "#8b5cf6",
-    },
-  ];
   const addHistory = (
     text: string,
     language: string,
@@ -151,7 +134,7 @@ const GestureDisplay: React.FC = () => {
       .then((result) => {
         if (cancelled || requestId !== translationRequestIdRef.current) return;
         const output = result.translatedText || translationInput.text;
-        setTranslatedText(output);
+        setTranslationResult({ language: activeLang, text: output });
         if (
           !translationInput.speak ||
           mode !== "gesture" ||
@@ -190,7 +173,10 @@ const GestureDisplay: React.FC = () => {
       .catch((error) => {
         console.error("Translation failed:", error);
         if (cancelled || requestId !== translationRequestIdRef.current) return;
-        setTranslatedText(translationInput.text);
+        setTranslationResult({
+          language: activeLang,
+          text: translationInput.text,
+        });
       });
     return () => {
       cancelled = true;
@@ -212,7 +198,7 @@ const GestureDisplay: React.FC = () => {
       setGestureText("");
     }
     setTranslationInput(null);
-    setTranslatedText("");
+    setTranslationResult(null);
     setSpeechTranslationVersion(0);
     setMode(newMode);
   };
@@ -221,7 +207,7 @@ const GestureDisplay: React.FC = () => {
       const rawSentence = sentence.trim();
       if (!rawSentence) return;
       setGestureText(rawSentence);
-      setTranslatedText("");
+      setTranslationResult(null);
       setTranslationInput({
         text: rawSentence,
         sourceLanguage: "English",
@@ -235,7 +221,7 @@ const GestureDisplay: React.FC = () => {
     const recognizedWord = word.trim();
     if (!recognizedWord) return;
     setGestureText(recognizedWord);
-    setTranslatedText("");
+    setTranslationResult(null);
     setTranslationInput({
       text: recognizedWord,
       sourceLanguage: "English",
@@ -244,43 +230,24 @@ const GestureDisplay: React.FC = () => {
   }, []);
   const handleSpeechDetected = async (text: string) => {
     setSpeechText(text);
-    setTranslatedText("");
+    setTranslationResult(null);
     setSpeechTranslationVersion((version) => version + 1);
     setTranslationInput({ text, sourceLanguage: "English", speak: false });
     addHistory(text, activeLang, "speech");
   };
   return (
-    <div style={styles.page}>
+    <div className="gesture-display-page" style={styles.page}>
       <div style={styles.mainContainer}>
-        <Sidebar
-          languages={languages}
-          activeLang={activeLang}
-          setActiveLang={(lang) => {
-            setActiveLang(lang as Language);
-            setTranslatedText("");
-          }}
-          sidebarOpen={sidebarOpen}
-          toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-        />
-
         <main style={styles.mainContent}>
           <TopNavbar
             activeLang={activeLang}
-            sidebarOpen={sidebarOpen}
-            toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
             isCapturing={isCapturing}
             onToggleCapture={() => setIsCapturing((p) => !p)}
             onShowHistory={() => setShowHistory(true)}
             onShowLibrary={() => setShowLibrary(true)}
             mode={mode}
             onModeChange={handleModeSwitch}
-            userName={user?.name}
             userRole={user?.role}
-            onManageSigns={() => navigate("/admin-signs")}
-            onLogout={() => {
-              logout();
-              navigate("/login", { replace: true });
-            }}
           />
 
           <div style={styles.contentArea}>
@@ -336,12 +303,13 @@ const GestureDisplay: React.FC = () => {
         />
       )}
 
-      {showLibrary && (
+      {showLibrary && (user?.role === "ADMIN" || user?.role === "TEACHER") && (
         <SignLibraryModal
           onClose={() => setShowLibrary(false)}
           mode={mode}
           language={activeLang}
-          canEditImages={user?.role === "ADMIN" || user?.role === "TEACHER"}
+          canEditMedia={user?.role === "ADMIN"}
+          canDeleteAssets={user?.role === "ADMIN"}
           onSignAdded={() => setSignLibraryVersion((v) => v + 1)}
         />
       )}

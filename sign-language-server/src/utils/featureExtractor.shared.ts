@@ -8,11 +8,19 @@ export interface GestureFeatures {
   right_elbow_angle: number;
   left_hand_open: boolean;
   right_hand_open: boolean;
+  left_hand_detected: boolean;
+  right_hand_detected: boolean;
   left_hand_above_shoulder: boolean;
   right_hand_above_shoulder: boolean;
   hands_distance: number;
   left_fingers: boolean[];
   right_fingers: boolean[];
+  left_finger_extensions: number[];
+  right_finger_extensions: number[];
+  left_finger_directions: number[];
+  right_finger_directions: number[];
+  left_finger_joint_angles: number[];
+  right_finger_joint_angles: number[];
   left_finger_count: number;
   right_finger_count: number;
   left_hand_to_nose: number;
@@ -163,10 +171,35 @@ export function calculateAngle(a: Point, b: Point, c: Point): number {
   const cosine = dot / (magAB * magCB);
   return Math.acos(Math.max(-1, Math.min(1, cosine))) * (180 / Math.PI);
 }
-function fingerUp(tip: Point | null, pip: Point | null) {
-  if (!tip || !pip) return false;
-  return tip.y < pip.y;
+function fingerExtension(hand: any[], joints: number[]): number {
+  const points = joints
+    .map((index) => safePoint(hand, index))
+    .filter((point): point is Point => point !== null);
+  if (points.length !== joints.length) return 0;
+  let chainLength = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    chainLength += distance(points[index - 1], points[index]);
+  }
+  if (chainLength < 1e-6) return 0;
+  return Math.max(
+    0,
+    Math.min(1, distance(points[0], points[points.length - 1]) / chainLength),
+  );
 }
+const FINGER_LANDMARK_CHAINS = [
+  [1, 2, 3, 4],
+  [5, 6, 7, 8],
+  [9, 10, 11, 12],
+  [13, 14, 15, 16],
+  [17, 18, 19, 20],
+];
+const FINGER_JOINT_TRIPLES = [
+  [[0, 1, 2], [1, 2, 3], [2, 3, 4]],
+  [[0, 5, 6], [5, 6, 7], [6, 7, 8]],
+  [[0, 9, 10], [9, 10, 11], [10, 11, 12]],
+  [[0, 13, 14], [13, 14, 15], [14, 15, 16]],
+  [[0, 17, 18], [17, 18, 19], [18, 19, 20]],
+];
 export function detectHandState(hand: any[] = []) {
   const zeroNormal = {
     x: 0,
@@ -176,34 +209,38 @@ export function detectHandState(hand: any[] = []) {
   if (!Array.isArray(hand) || hand.length < 21) {
     return {
       open: false,
+      detected: false,
       fingerCount: 0,
       fingers: [false, false, false, false, false],
+      extensions: [0, 0, 0, 0, 0],
+      directions: Array(15).fill(0),
+      jointAngles: Array(15).fill(0),
       palmWidth: 0,
       palmNormal: zeroNormal,
     };
   }
   const wrist = safePoint(hand, 0);
-  const thumbTip = safePoint(hand, 4);
-  const thumbIP = safePoint(hand, 3);
-  const indexTip = safePoint(hand, 8);
-  const indexPip = safePoint(hand, 6);
-  const middleTip = safePoint(hand, 12);
-  const middlePip = safePoint(hand, 10);
-  const ringTip = safePoint(hand, 16);
-  const ringPip = safePoint(hand, 14);
-  const pinkyTip = safePoint(hand, 20);
-  const pinkyPip = safePoint(hand, 18);
   const indexMcp = safePoint(hand, 5);
   const pinkyMcp = safePoint(hand, 17);
-  const thumb =
-    thumbTip && thumbIP ? Math.abs(thumbTip.x - thumbIP.x) > 0.02 : false;
-  const fingers = [
-    thumb,
-    fingerUp(indexTip, indexPip),
-    fingerUp(middleTip, middlePip),
-    fingerUp(ringTip, ringPip),
-    fingerUp(pinkyTip, pinkyPip),
+  const extensions = [
+    ...FINGER_LANDMARK_CHAINS.map((chain) => fingerExtension(hand, chain)),
   ];
+  const directions = FINGER_LANDMARK_CHAINS.flatMap((chain) => {
+    const base = safePoint(hand, chain[0]);
+    const tip = safePoint(hand, chain[chain.length - 1]);
+    const direction = base && tip ? normalize(sub(tip, base)) : { x: 0, y: 0, z: 0 };
+    return [direction.x, direction.y, direction.z];
+  });
+  const jointAngles = FINGER_JOINT_TRIPLES.flatMap((finger) =>
+    finger.map((joints) => {
+      const points = joints.map((index) => safePoint(hand, index));
+      if (!points[0] || !points[1] || !points[2]) return 0;
+      return calculateAngle(points[0], points[1], points[2]) / 180;
+    }),
+  );
+  const fingers = extensions.map(
+    (extension, index) => extension >= (index === 0 ? 0.72 : 0.78),
+  );
   const fingerCount = fingers.filter(Boolean).length;
   const palmWidth = indexMcp && pinkyMcp ? distance(indexMcp, pinkyMcp) : 0;
   const palmNormal =
@@ -212,8 +249,12 @@ export function detectHandState(hand: any[] = []) {
       : zeroNormal;
   return {
     open: fingerCount >= 3,
+    detected: Boolean(wrist && indexMcp && pinkyMcp),
     fingerCount,
     fingers,
+    extensions,
+    directions,
+    jointAngles,
     palmWidth,
     palmNormal,
     wrist,
@@ -293,6 +334,8 @@ export function extractFeatures(
     rightElbowAngle,
     Number(leftHandState.open),
     Number(rightHandState.open),
+    Number(leftHandState.detected),
+    Number(rightHandState.detected),
     leftArmExtension,
     rightArmExtension,
     handsDistance,
@@ -304,6 +347,12 @@ export function extractFeatures(
     rightWristZ,
     leftHandState.fingerCount,
     rightHandState.fingerCount,
+    ...leftHandState.extensions,
+    ...rightHandState.extensions,
+    ...leftHandState.directions,
+    ...rightHandState.directions,
+    ...leftHandState.jointAngles,
+    ...rightHandState.jointAngles,
     leftHandState.palmNormal.x,
     leftHandState.palmNormal.y,
     leftHandState.palmNormal.z,
@@ -320,11 +369,31 @@ export function extractFeatures(
     right_elbow_angle: Math.round(rightElbowAngle),
     left_hand_open: leftHandState.open,
     right_hand_open: rightHandState.open,
+    left_hand_detected: leftHandState.detected,
+    right_hand_detected: rightHandState.detected,
     left_hand_above_shoulder: leftWristR.y < leftShoulderR.y,
     right_hand_above_shoulder: rightWristR.y < rightShoulderR.y,
     hands_distance: Number(handsDistance.toFixed(4)),
     left_fingers: leftHandState.fingers,
     right_fingers: rightHandState.fingers,
+    left_finger_extensions: leftHandState.extensions.map((value) =>
+      Number(value.toFixed(4)),
+    ),
+    right_finger_extensions: rightHandState.extensions.map((value) =>
+      Number(value.toFixed(4)),
+    ),
+    left_finger_directions: leftHandState.directions.map((value) =>
+      Number(value.toFixed(4)),
+    ),
+    right_finger_directions: rightHandState.directions.map((value) =>
+      Number(value.toFixed(4)),
+    ),
+    left_finger_joint_angles: leftHandState.jointAngles.map((value) =>
+      Number(value.toFixed(4)),
+    ),
+    right_finger_joint_angles: rightHandState.jointAngles.map((value) =>
+      Number(value.toFixed(4)),
+    ),
     left_finger_count: leftHandState.fingerCount,
     right_finger_count: rightHandState.fingerCount,
     left_hand_to_nose: Number(

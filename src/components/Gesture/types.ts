@@ -11,6 +11,7 @@ export interface SignAsset {
   file: string;
   type: string;
   isPublished?: boolean;
+  recordingCount?: number;
   aliases?: string[];
   translations?: Record<string, string>;
   gesture?: {

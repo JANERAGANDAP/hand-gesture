@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { API_ROOT, resolveApiUrl } from "../../config";
 import { apiClient, authHeaders } from "../../services/api";
+import { getGestureLibrary } from "../../services/gestureApi";
 import { useToast } from "../../contexts/ToastContext";
 import type { SignAsset } from "./types";
 interface SpeechGestureProps {
@@ -263,8 +264,8 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
   // instead of a silently blank sign card.
   const [failedAssetKey, setFailedAssetKey] = useState<string | null>(null);
   const recognitionRef = useRef<any>(null);
-  const dynamicAssetsRef = useRef<any[]>([]);
-  const [dynamicAssets, setDynamicAssets] = useState<any[]>([]);
+  const dynamicAssetsRef = useRef<SignAsset[]>([]);
+  const [dynamicAssets, setDynamicAssets] = useState<SignAsset[]>([]);
   const manualStopRef = useRef(false);
   const lastProcessedIndexRef = useRef(0);
   // Where the currently displayed transcript starts inside event.results.
@@ -1203,22 +1204,60 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
     // breaking it.
     const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
     const loadSigns = (attempt: number) => {
-      fetch(`${API_ROOT}/api/signs`, { headers: authHeaders() })
-        .then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.json();
-        })
-        .then((data) => {
+      Promise.all([
+        fetch(`${API_ROOT}/api/signs`, { headers: authHeaders() }).then(
+          (res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json() as Promise<SignAsset[]>;
+          },
+        ),
+        getGestureLibrary(),
+      ])
+        .then(([data, recordedGestures]) => {
           if (cancelled) return;
-          const updated: SignAsset[] = data.map((item: any) => ({
+          const uploadedAssets: SignAsset[] = data.map((item) => ({
             ...item,
             file: resolveApiUrl(item.file),
           }));
+          if (!recordedGestures.success) {
+            console.warn(
+              "Registered gesture images could not be loaded:",
+              recordedGestures.error,
+            );
+          }
+          const uploadedWords = new Set(
+            uploadedAssets.map((asset) => normalizeForMatch(asset.word)),
+          );
+          const gestureAssets: SignAsset[] = recordedGestures.success
+            ? recordedGestures.words
+                .flatMap((gesture, index) => {
+                  if (
+                    !gesture.handCropUrl ||
+                    uploadedWords.has(normalizeForMatch(gesture.word))
+                  ) {
+                    return [];
+                  }
+                  return [
+                    {
+                      id: -(index + 1),
+                      word: gesture.word,
+                      file: resolveApiUrl(gesture.handCropUrl),
+                      type: "image/jpeg",
+                      isPublished: true,
+                      recordingCount: gesture.count,
+                    },
+                  ];
+                })
+            : [];
+          const updated = [...uploadedAssets, ...gestureAssets];
           dynamicAssetsRef.current = updated;
           setDynamicAssets(updated);
           setSignsLoaded(true);
           try {
-            const publishedAssets = updated.filter(
+            // Gesture hand-crops use expiring signed URLs; cache only
+            // uploaded assets so an expired URL is never reused as if it
+            // were a durable library image.
+            const publishedAssets = uploadedAssets.filter(
               (asset) => asset.isPublished !== false,
             );
             localStorage.setItem(
@@ -1284,11 +1323,15 @@ const SpeechGesture: React.FC<SpeechGestureProps> = ({
   // spacing would match in generateSequence but then fail to resolve to
   // an actual video right here, showing "No sign available" despite a
   // real match having already happened.
-  const currentAsset = dynamicAssets.find(
+  const matchingAssets = dynamicAssets.filter(
     (item) =>
       normalizeForMatch(item.word) ===
       (currentWord ? normalizeForMatch(currentWord) : null),
   );
+  const currentAsset =
+    matchingAssets.find((item) =>
+      item.type?.toLowerCase().includes("video"),
+    ) ?? matchingAssets[0];
   useEffect(() => {
     setFailedAssetKey(null);
   }, [currentAsset?.file]);

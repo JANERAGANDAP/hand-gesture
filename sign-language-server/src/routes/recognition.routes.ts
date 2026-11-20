@@ -252,9 +252,10 @@ router.post("/", authenticate, recognitionLimiter, async (req, res) => {
       let finalScore: number;
       let dtwScore = Infinity;
       // Static words: no motion to align, so DTW never runs for them —
-      // frameScore (the per-word z-score distance over MediaPipe hand/
-      // pose landmarks — wrist/elbow/palm-normal/finger-state features,
-      // see gestureStats.ts's frameDistance) is the whole score. This
+      // frameScore (the per-word distance over MediaPipe hand/pose landmarks
+      // — wrist/elbow/palm orientation, finger direction, extension, and
+      // joint-angle features; see gestureStats.ts's frameDistance) is the
+      // whole score. This
       // replaced the image-based hand-shape CNN, which needed far more
       // per-word training samples than this app's few-shot,
       // teacher-adds-a-word-and-it's-live workflow ever produces —

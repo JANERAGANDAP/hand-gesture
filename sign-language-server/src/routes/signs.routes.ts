@@ -137,7 +137,7 @@ router.get("/", authenticate, async (req: AuthedRequest, res) => {
 router.get(
   "/health-check",
   authenticate,
-  requireRole("TEACHER", "ADMIN"),
+  requireRole("ADMIN"),
   async (_req, res) => {
     try {
       const allSigns = await prisma.signAsset.findMany({

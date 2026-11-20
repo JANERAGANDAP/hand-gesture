@@ -1,13 +1,20 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   apiClient,
-  replaceSignAssetImage,
+  deleteSignAsset,
+  replaceSignAssetMedia,
   uploadSignAsset,
 } from "../../services/api";
+import {
+  getGestureLibrary,
+  type RegisteredGestureLibraryEntry,
+} from "../../services/gestureApi";
 import { resolveApiUrl } from "../../config";
 import type { SignAsset } from "./types";
 
 const ADD_LANGUAGES = ["English", "Cebuano", "Tagalog", "Ilocano", "Bikolano"];
+const MIN_SIGN_VIDEO_MS = 2000;
+const MAX_SIGN_VIDEO_MS = 5000;
 
 // Candidates in preference order — MediaRecorder support varies by
 // browser. Safari records video/mp4 directly; Chrome/Firefox only
@@ -18,6 +25,17 @@ const RECORDER_MIME_CANDIDATES = [
   "video/webm;codecs=vp8,opus",
   "video/webm",
 ];
+
+interface LibraryItem {
+  key: string;
+  kind: "uploaded" | "recorded";
+  word: string;
+  file: string | null;
+  type: string;
+  asset?: SignAsset;
+  gestureType?: string;
+  recordingCount?: number;
+}
 
 function pickRecorderMimeType(): string | null {
   if (typeof MediaRecorder === "undefined") return null;
@@ -33,28 +51,67 @@ function extensionForMimeType(mime: string): string {
   return "dat";
 }
 
+function readVideoDurationMs(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const durationMs = video.duration * 1000;
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      URL.revokeObjectURL(url);
+      if (!Number.isFinite(durationMs)) {
+        reject(new Error("Could not read the video duration."));
+        return;
+      }
+      resolve(durationMs);
+    };
+    video.onerror = () => {
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read the video duration."));
+    };
+    video.src = url;
+  });
+}
+
 interface SignLibraryModalProps {
   onClose: () => void;
   mode: "gesture" | "speech";
   language?: string;
-  canEditImages: boolean;
-  // Called after a successful record/upload or image edit, so the parent
+  canEditMedia: boolean;
+  canDeleteAssets: boolean;
+  initialEditAssetId?: number;
+  // Called after a successful record/upload, media edit, or deletion, so the parent
   // can refresh SpeechGesture's word list without a page reload — see
   // refreshSignsVersion in SpeechGesture.tsx.
   onSignAdded?: () => void;
 }
 
 type RecordState = "idle" | "requesting" | "live" | "recording" | "recorded" | "error";
-type EditCameraState = "idle" | "requesting" | "live" | "captured" | "error";
+type EditCameraState =
+  | "idle"
+  | "requesting"
+  | "live"
+  | "recording"
+  | "captured"
+  | "error";
 
 const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   onClose,
   mode,
   language,
-  canEditImages,
+  canEditMedia,
+  canDeleteAssets,
+  initialEditAssetId,
   onSignAdded,
 }) => {
   const [assets, setAssets] = useState<SignAsset[]>([]);
+  const [recordedGestures, setRecordedGestures] = useState<
+    RegisteredGestureLibraryEntry[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -67,35 +124,63 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deletingAssetId, setDeletingAssetId] = useState<number | null>(null);
 
   // Record-a-sign panel (mode === "gesture")
   const [recordState, setRecordState] = useState<RecordState>("idle");
+  const [canStopRecording, setCanStopRecording] = useState(false);
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recordedMimeRef = useRef<string>("video/webm");
+  const recordingStartedAtRef = useRef(0);
+  const minimumDurationTimerRef = useRef<number | null>(null);
+  const maximumDurationTimerRef = useRef<number | null>(null);
+  const editMinimumDurationTimerRef = useRef<number | null>(null);
+  const editMaximumDurationTimerRef = useRef<number | null>(null);
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [editingAsset, setEditingAsset] = useState<SignAsset | null>(null);
+  const [editCanStopRecording, setEditCanStopRecording] = useState(false);
   const [editCameraState, setEditCameraState] =
     useState<EditCameraState>("idle");
-  const [editImageFile, setEditImageFile] = useState<File | null>(null);
+  const [editMediaFile, setEditMediaFile] = useState<File | null>(null);
   const [editPreviewUrl, setEditPreviewUrl] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const editVideoRef = useRef<HTMLVideoElement | null>(null);
+  const editRecordedChunksRef = useRef<Blob[]>([]);
+  const editRecordedMimeRef = useRef("video/webm");
+  const editRecordingStartedAtRef = useRef(0);
+  const editRecordingCancelledRef = useRef(false);
+  const editCameraRequestIdRef = useRef(0);
 
   // Upload-a-sign panel (mode === "speech")
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedPreviewUrl, setSelectedPreviewUrl] = useState<string | null>(null);
 
+  const gestureTypeForWord = (word: string) =>
+    recordedGestures.find(
+      (gesture) =>
+        gesture.word.trim().toLowerCase() === word.trim().toLowerCase(),
+    )?.gestureType?.toLowerCase();
+  const isDynamicGesture = (word: string) =>
+    gestureTypeForWord(word) === "dynamic";
+
   const loadAssets = () => {
     setLoading(true);
     setError(null);
-    apiClient
-      .get<SignAsset[]>("/signs")
-      .then((data) => {
-        setAssets(Array.isArray(data) ? data : []);
+    Promise.all([
+      apiClient.get<SignAsset[]>("/signs"),
+      getGestureLibrary(),
+    ])
+      .then(([assetData, gestureData]) => {
+        if (!gestureData.success) {
+          throw new Error(gestureData.error ?? "Failed to load registered gestures");
+        }
+        setAssets(Array.isArray(assetData) ? assetData : []);
+        setRecordedGestures(gestureData.words);
       })
       .catch((err) => {
         console.error("Failed to load sign library:", err);
@@ -106,12 +191,28 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    apiClient
-      .get<SignAsset[]>("/signs")
-      .then((data) => {
-        if (!cancelled) setAssets(Array.isArray(data) ? data : []);
+    Promise.all([
+      apiClient.get<SignAsset[]>("/signs"),
+      getGestureLibrary(),
+    ])
+      .then(([assetData, gestureData]) => {
+        if (!gestureData.success) {
+          throw new Error(gestureData.error ?? "Failed to load registered gestures");
+        }
+        if (!cancelled) {
+          setAssets(Array.isArray(assetData) ? assetData : []);
+          setRecordedGestures(gestureData.words);
+          if (initialEditAssetId !== undefined && canEditMedia) {
+            const initialAsset = assetData.find(
+              (asset) => asset.id === initialEditAssetId,
+            );
+            if (initialAsset) {
+              setEditingAsset(initialAsset);
+            } else {
+              setError("That sign is no longer available in the library.");
+            }
+          }
+        }
       })
       .catch((err) => {
         console.error("Failed to load sign library:", err);
@@ -123,7 +224,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canEditMedia, initialEditAssetId]);
 
   // Always release the camera when the panel is closed/unmounted — never
   // leave the recording light on after the modal goes away.
@@ -131,9 +232,36 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
   };
+  const clearRecordingTimers = () => {
+    if (minimumDurationTimerRef.current !== null) {
+      window.clearTimeout(minimumDurationTimerRef.current);
+      minimumDurationTimerRef.current = null;
+    }
+    if (maximumDurationTimerRef.current !== null) {
+      window.clearTimeout(maximumDurationTimerRef.current);
+      maximumDurationTimerRef.current = null;
+    }
+  };
+  const clearEditRecordingTimers = () => {
+    if (editMinimumDurationTimerRef.current !== null) {
+      window.clearTimeout(editMinimumDurationTimerRef.current);
+      editMinimumDurationTimerRef.current = null;
+    }
+    if (editMaximumDurationTimerRef.current !== null) {
+      window.clearTimeout(editMaximumDurationTimerRef.current);
+      editMaximumDurationTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     return () => {
+      editCameraRequestIdRef.current += 1;
+      clearRecordingTimers();
+      clearEditRecordingTimers();
+      if (mediaRecorderRef.current?.state === "recording") {
+        editRecordingCancelledRef.current = true;
+        mediaRecorderRef.current.stop();
+      }
       stopCameraTracks();
       if (recordedUrl) URL.revokeObjectURL(recordedUrl);
       if (selectedPreviewUrl) URL.revokeObjectURL(selectedPreviewUrl);
@@ -147,12 +275,16 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   }, [editPreviewUrl]);
 
   useEffect(() => {
-    if (editCameraState !== "live" || !streamRef.current || !editVideoRef.current) {
+    if (
+      (editCameraState !== "live" && editCameraState !== "recording") ||
+      !streamRef.current ||
+      !editVideoRef.current
+    ) {
       return;
     }
     editVideoRef.current.srcObject = streamRef.current;
     void editVideoRef.current.play().catch((err: unknown) => {
-      console.error("Could not start the image-edit camera preview:", err);
+      console.error("Could not start the media-edit camera preview:", err);
       setEditError("The camera preview could not start. Try again.");
     });
   }, [editCameraState]);
@@ -175,6 +307,12 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   const closeAddPanel = () => {
     resetAddPanel();
     setShowAddPanel(false);
+  };
+
+  const addMediaForWord = (word: string) => {
+    resetAddPanel();
+    setNewWord(word);
+    setShowAddPanel(true);
   };
 
   const startCamera = async () => {
@@ -216,19 +354,34 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
       if (e.data.size > 0) recordedChunksRef.current.push(e.data);
     };
     recorder.onstop = () => {
+      clearRecordingTimers();
       const blob = new Blob(recordedChunksRef.current, { type: mimeType });
       setRecordedBlob(blob);
       setRecordedUrl(URL.createObjectURL(blob));
       stopCameraTracks();
       setRecordState("recorded");
+      setCanStopRecording(false);
     };
     mediaRecorderRef.current = recorder;
-    recorder.start();
+    recorder.start(100);
+    recordingStartedAtRef.current = Date.now();
+    setCanStopRecording(false);
+    minimumDurationTimerRef.current = window.setTimeout(
+      () => setCanStopRecording(true),
+      MIN_SIGN_VIDEO_MS,
+    );
+    maximumDurationTimerRef.current = window.setTimeout(() => {
+      if (recorder.state === "recording") recorder.stop();
+    }, MAX_SIGN_VIDEO_MS);
     setRecordState("recording");
   };
 
   const stopRecording = () => {
-    mediaRecorderRef.current?.stop();
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state !== "recording") return;
+    if (Date.now() - recordingStartedAtRef.current < MIN_SIGN_VIDEO_MS) return;
+    clearRecordingTimers();
+    recorder.stop();
   };
 
   const retakeRecording = () => {
@@ -247,9 +400,21 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
       setSelectedPreviewUrl(null);
       return;
     }
-    const allowed = ["video/mp4", "image/jpeg", "image/png", "image/webp"];
+    const allowed = [
+      "video/mp4",
+      "video/webm",
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ];
     if (!allowed.includes(file.type)) {
-      setSubmitError("Only MP4 video or JPG/PNG/WEBP images are allowed.");
+      setSubmitError("Only MP4/WEBM video or JPG/PNG/WEBP images are allowed.");
+      setSelectedFile(null);
+      setSelectedPreviewUrl(null);
+      return;
+    }
+    if (isDynamicGesture(newWord) && !file.type.startsWith("video/")) {
+      setSubmitError("Dynamic signs must use video media.");
       setSelectedFile(null);
       setSelectedPreviewUrl(null);
       return;
@@ -267,6 +432,10 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   const submitAsset = async (file: File) => {
     if (!newWord.trim()) {
       setSubmitError("Enter the word this sign is for first.");
+      return;
+    }
+    if (isDynamicGesture(newWord) && !file.type.startsWith("video/")) {
+      setSubmitError("Dynamic signs must use video media.");
       return;
     }
     setSubmitting(true);
@@ -328,16 +497,72 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     void submitAsset(selectedFile);
   };
 
+  const captureNewImage = async () => {
+    if (!newWord.trim()) {
+      setSubmitError("Enter the word this sign is for first.");
+      return;
+    }
+    if (isDynamicGesture(newWord)) {
+      setSubmitError("Dynamic signs must use video media.");
+      return;
+    }
+    const video = videoPreviewRef.current;
+    if (!video?.videoWidth || !video.videoHeight) {
+      setSubmitError("The camera is not ready yet. Please wait and try again.");
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setSubmitError("This browser cannot capture an image from the camera.");
+      return;
+    }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (captured) =>
+            captured
+              ? resolve(captured)
+              : reject(new Error("Could not capture the camera image.")),
+          "image/jpeg",
+          0.9,
+        );
+      });
+      stopCameraTracks();
+      setRecordState("idle");
+      const file = new File([blob], `sign-image-${Date.now()}.jpg`, {
+        type: "image/jpeg",
+      });
+      await submitAsset(file);
+    } catch (err) {
+      console.error("Could not capture the new sign photo:", err);
+      setSubmitError(
+        err instanceof Error ? err.message : "Could not capture the photo.",
+      );
+    }
+  };
+
   const startEditCamera = async () => {
+    const requestId = ++editCameraRequestIdRef.current;
     setEditError(null);
+    setEditCanStopRecording(false);
     setEditCameraState("requesting");
     try {
-      streamRef.current = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: false,
       });
+      if (requestId !== editCameraRequestIdRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      streamRef.current = stream;
       setEditCameraState("live");
     } catch (err) {
+      if (requestId !== editCameraRequestIdRef.current) return;
       console.error("Camera access for sign image editing failed:", err);
       setEditError(
         "Couldn't access your camera — check the browser's camera permission and try again.",
@@ -346,7 +571,85 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     }
   };
 
+  const startEditRecording = () => {
+    const stream = streamRef.current;
+    if (!stream) {
+      setEditError("Start the camera before recording a video.");
+      return;
+    }
+    const mimeType = pickRecorderMimeType();
+    if (!mimeType) {
+      setEditError("Video recording isn't supported in this browser.");
+      return;
+    }
+
+    editRecordingCancelledRef.current = false;
+    editRecordedMimeRef.current = mimeType;
+    editRecordedChunksRef.current = [];
+    const recorder = new MediaRecorder(stream, { mimeType });
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) editRecordedChunksRef.current.push(event.data);
+    };
+    recorder.onstop = () => {
+      clearEditRecordingTimers();
+      setEditCanStopRecording(false);
+      if (editRecordingCancelledRef.current) {
+        editRecordingCancelledRef.current = false;
+        return;
+      }
+
+      const blob = new Blob(editRecordedChunksRef.current, { type: mimeType });
+      if (blob.size === 0) {
+        setEditError("The camera did not produce a video. Try recording again.");
+        setEditCameraState("error");
+        stopCameraTracks();
+        return;
+      }
+
+      const file = new File(
+        [blob],
+        `sign-video-${Date.now()}.${extensionForMimeType(mimeType)}`,
+        { type: mimeType },
+      );
+      setEditMediaFile(file);
+      setEditPreviewUrl(URL.createObjectURL(file));
+      setEditCameraState("captured");
+      stopCameraTracks();
+    };
+
+    mediaRecorderRef.current = recorder;
+    recorder.start(100);
+    editRecordingStartedAtRef.current = Date.now();
+    setEditCanStopRecording(false);
+    editMinimumDurationTimerRef.current = window.setTimeout(
+      () => setEditCanStopRecording(true),
+      MIN_SIGN_VIDEO_MS,
+    );
+    editMaximumDurationTimerRef.current = window.setTimeout(() => {
+      if (recorder.state === "recording") recorder.stop();
+    }, MAX_SIGN_VIDEO_MS);
+    setEditError(null);
+    setEditCameraState("recording");
+  };
+
+  const stopEditRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (
+      !recorder ||
+      recorder.state !== "recording" ||
+      Date.now() - editRecordingStartedAtRef.current < MIN_SIGN_VIDEO_MS
+    ) {
+      return;
+    }
+    clearEditRecordingTimers();
+    recorder.stop();
+  };
+
   const captureEditImage = async () => {
+    if (editingAsset && isDynamicGesture(editingAsset.word)) {
+      setEditError("Dynamic signs must use video media.");
+      return;
+    }
     const video = editVideoRef.current;
     if (!video?.videoWidth || !video.videoHeight) {
       setEditError("The camera is not ready yet. Please wait and try again.");
@@ -375,7 +678,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
       const file = new File([blob], `sign-image-${Date.now()}.jpg`, {
         type: "image/jpeg",
       });
-      setEditImageFile(file);
+      setEditMediaFile(file);
       setEditPreviewUrl(URL.createObjectURL(file));
       setEditError(null);
       stopCameraTracks();
@@ -388,21 +691,89 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     }
   };
 
-  const cancelImageEdit = () => {
+  const handleEditFileChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = "";
+    setEditError(null);
+    if (!file) return;
+    stopCameraTracks();
+    setEditMediaFile(null);
+    setEditPreviewUrl(null);
+    setEditCameraState("idle");
+    const allowed = [
+      "video/mp4",
+      "video/webm",
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ];
+    if (!allowed.includes(file.type)) {
+      setEditError("Choose an MP4/WEBM video or a JPG/PNG/WEBP image.");
+      return;
+    }
+    if (
+      editingAsset &&
+      isDynamicGesture(editingAsset.word) &&
+      !file.type.startsWith("video/")
+    ) {
+      setEditError("Dynamic signs must use video media.");
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      setEditError("File is too large (25MB max).");
+      return;
+    }
+    if (file.type.startsWith("video/")) {
+      try {
+        const durationMs = await readVideoDurationMs(file);
+        if (durationMs < MIN_SIGN_VIDEO_MS || durationMs > MAX_SIGN_VIDEO_MS) {
+          setEditError("Choose a video that is between 2 and 5 seconds long.");
+          return;
+        }
+      } catch (error) {
+        console.error("Could not read the uploaded sign video duration:", error);
+        setEditError("Could not read the video duration. Choose another video.");
+        return;
+      }
+    }
+    setEditMediaFile(file);
+    setEditPreviewUrl(URL.createObjectURL(file));
+    setEditCameraState("captured");
+  };
+
+  const cancelMediaEdit = () => {
+    editCameraRequestIdRef.current += 1;
+    clearEditRecordingTimers();
+    if (editCameraState === "recording") {
+      editRecordingCancelledRef.current = true;
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+    }
     stopCameraTracks();
     setEditingAsset(null);
+    setEditCanStopRecording(false);
     setEditCameraState("idle");
-    setEditImageFile(null);
+    setEditMediaFile(null);
     setEditPreviewUrl(null);
     setEditError(null);
   };
 
-  const saveEditedImage = async () => {
-    if (!editingAsset || !editImageFile) return;
+  const saveEditedMedia = async () => {
+    if (!editingAsset || !editMediaFile) return;
+    if (
+      isDynamicGesture(editingAsset.word) &&
+      !editMediaFile.type.startsWith("video/")
+    ) {
+      setEditError("Dynamic signs must use video media.");
+      return;
+    }
     setSubmitting(true);
     setEditError(null);
     try {
-      const updated = await replaceSignAssetImage(editingAsset.id, editImageFile);
+      const updated = await replaceSignAssetMedia(editingAsset.id, editMediaFile);
       setAssets((current) =>
         current.map((asset) =>
           asset.id === updated.id
@@ -410,25 +781,104 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
             : asset,
         ),
       );
-      setSubmitSuccess(`The image for "${updated.word}" was updated.`);
-      cancelImageEdit();
+      setSubmitSuccess(`The sign media for "${updated.word}" was updated.`);
+      cancelMediaEdit();
       onSignAdded?.();
       setTimeout(() => setSubmitSuccess(null), 4000);
     } catch (err) {
-      console.error("Sign image update failed:", err);
+      console.error("Sign media update failed:", err);
       setEditError(
         err instanceof Error
           ? err.message
-          : "Image update failed. Check your connection and try again.",
+          : "Media update failed. Check your connection and try again.",
       );
     } finally {
       setSubmitting(false);
     }
   };
 
-  const filtered = assets.filter((a) =>
-    a.word.toLowerCase().includes(search.trim().toLowerCase()),
+  const deleteAsset = async (asset: SignAsset) => {
+    if (!canDeleteAssets || deletingAssetId !== null) return;
+    if (
+      !window.confirm(
+        `Delete "${asset.word}" and its uploaded media? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+
+    setDeleteError(null);
+    setDeletingAssetId(asset.id);
+    try {
+      await deleteSignAsset(asset.id, asset.word);
+      setAssets((current) => current.filter((entry) => entry.id !== asset.id));
+      if (editingAsset?.id === asset.id) cancelMediaEdit();
+      setSubmitSuccess(`"${asset.word}" was deleted.`);
+      onSignAdded?.();
+      setTimeout(() => setSubmitSuccess(null), 4000);
+    } catch (err) {
+      console.error("Sign deletion failed:", err);
+      setDeleteError(
+        err instanceof Error
+          ? err.message
+          : "Sign deletion failed. Check your connection and try again.",
+      );
+    } finally {
+      setDeletingAssetId(null);
+    }
+  };
+
+  const normalizedSearch = search.trim().toLowerCase();
+  const matchingAssets = assets.filter((asset) =>
+    asset.word.toLowerCase().includes(normalizedSearch),
   );
+  const assetWords = new Set(
+    assets.map((asset) => asset.word.trim().toLowerCase()),
+  );
+  const registeredGesturesByWord = new Map(
+    recordedGestures.map((gesture) => [
+      gesture.word.trim().toLowerCase(),
+      gesture,
+    ]),
+  );
+  const filtered: LibraryItem[] = [
+    ...matchingAssets.map((asset) => {
+      const registration = registeredGesturesByWord.get(
+        asset.word.trim().toLowerCase(),
+      );
+      return {
+        key: `asset-${asset.id}`,
+        kind: "uploaded" as const,
+        word: asset.word,
+        file: asset.file,
+        type: asset.type,
+        asset,
+        gestureType: registration?.gestureType,
+        recordingCount: registration?.count,
+      };
+    }),
+    ...recordedGestures
+      .filter(
+        (gesture) =>
+          gesture.word.toLowerCase().includes(normalizedSearch) &&
+          !assetWords.has(gesture.word.trim().toLowerCase()),
+      )
+      .map((gesture) => ({
+        key: `recorded-${gesture.word}`,
+        kind: "recorded" as const,
+        word: gesture.word,
+        file:
+          gesture.gestureType.toLowerCase() === "dynamic"
+            ? null
+            : gesture.handCropUrl,
+        type:
+          gesture.gestureType.toLowerCase() === "dynamic"
+            ? "video/"
+            : "image/",
+        gestureType: gesture.gestureType,
+        recordingCount: gesture.count,
+      })),
+  ];
 
   return (
     <>
@@ -439,7 +889,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
           inset: 0,
           background: "rgba(0,0,0,0.6)",
           backdropFilter: "blur(4px)",
-          zIndex: 1000,
+          zIndex: 1400,
         }}
       />
       <div
@@ -453,7 +903,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
           background: "var(--pearl-surface, #fff)",
           border: "1px solid var(--pearl-border, rgba(15,23,42,0.09))",
           borderRadius: "16px",
-          zIndex: 1001,
+          zIndex: 1401,
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
@@ -486,6 +936,15 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
               </p>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {!showAddPanel && !editingAsset && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddPanel(true)}
+                  style={primaryButtonStyle}
+                >
+                  Add sign
+                </button>
+              )}
               <button
                 onClick={onClose}
                 style={{
@@ -509,22 +968,49 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
           </div>
 
           {!showAddPanel && !editingAsset && (
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search a word…"
-              style={{
-                width: "100%",
-                padding: "8px 14px",
-                borderRadius: "999px",
-                border: "1px solid var(--pearl-border, rgba(15,23,42,0.09))",
-                background: "var(--pearl-surface-muted, #fbf9f5)",
-                color: "var(--pearl-text, #1f2937)",
-                fontSize: "13px",
-                outline: "none",
-              }}
-            />
+            <>
+              {canEditMedia && (
+                <p
+                  style={{
+                    margin: "0 0 10px",
+                    color: "var(--pearl-text-muted, #6b7280)",
+                    fontSize: "12px",
+                  }}
+                >
+                  Uploaded media cards have Edit and Delete actions.
+                  Recorded-only cards are not clickable; use Add image/video
+                  on a card to add media for that sign.
+                </p>
+              )}
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search a word…"
+                style={{
+                  width: "100%",
+                  padding: "8px 14px",
+                  borderRadius: "999px",
+                  border: "1px solid var(--pearl-border, rgba(15, 23, 42, 0.09))",
+                  background: "var(--pearl-surface-muted, #fbf9f5)",
+                  color: "var(--pearl-text, #1f2937)",
+                  fontSize: "13px",
+                  outline: "none",
+                }}
+              />
+              {deleteError && (
+                <p
+                  role="alert"
+                  style={{
+                    margin: "8px 0 0",
+                    color: "var(--pearl-danger, #b42318)",
+                    fontSize: "12px",
+                  }}
+                >
+                  {deleteError}
+                </p>
+              )}
+            </>
           )}
 
           {submitSuccess && !showAddPanel && !editingAsset && (
@@ -545,16 +1031,98 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
 
         {editingAsset ? (
           <div style={{ overflowY: "auto", flex: 1, padding: "1.25rem 1.5rem" }}>
-            <h6 style={{ margin: "0 0 12px", color: "var(--pearl-text, #1f2937)" }}>
-              Replace image for “{editingAsset.word}”
-            </h6>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                marginBottom: 12,
+              }}
+            >
+              <h6 style={{ margin: 0, color: "var(--pearl-text, #1f2937)" }}>
+                Replace media for “{editingAsset.word}”
+              </h6>
+              {canDeleteAssets && (
+                <button
+                  type="button"
+                  onClick={() => void deleteAsset(editingAsset)}
+                  disabled={
+                    submitting || deletingAssetId === editingAsset.id
+                  }
+                  style={{
+                    ...dangerButtonStyle,
+                    opacity:
+                      submitting || deletingAssetId === editingAsset.id
+                        ? 0.65
+                        : 1,
+                    cursor:
+                      submitting || deletingAssetId === editingAsset.id
+                        ? "wait"
+                        : "pointer",
+                  }}
+                >
+                  {deletingAssetId === editingAsset.id ? "Deleting…" : "Delete"}
+                </button>
+              )}
+            </div>
             <p style={{ color: "#6b7280", fontSize: 13 }}>
-              Take a new photo with your camera. The existing sign entry and translations will stay the same.
+              {isDynamicGesture(editingAsset.word)
+                ? "Dynamic signs must stay videos. Upload an MP4/WEBM video or record a 2–5-second video. The sign entry and translations will stay the same."
+                : "Upload an image or a 2–5-second video, or use your camera to record a video or take a photo. The sign entry and translations will stay the same."}
             </p>
+            <div style={{ marginBottom: 16 }}>
+              {editingAsset.type.startsWith("video/") ? (
+                <video
+                  src={resolveApiUrl(editingAsset.file)}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  aria-label={`Current video for ${editingAsset.word}`}
+                  style={{
+                    width: "100%",
+                    maxWidth: 480,
+                    maxHeight: 220,
+                    objectFit: "contain",
+                    borderRadius: 12,
+                    background: "#0f172a",
+                  }}
+                />
+              ) : (
+                <img
+                  src={resolveApiUrl(editingAsset.file)}
+                  alt={`Current image for ${editingAsset.word}`}
+                  style={{
+                    width: "100%",
+                    maxWidth: 480,
+                    maxHeight: 220,
+                    objectFit: "contain",
+                    borderRadius: 12,
+                    background: "var(--pearl-surface-muted)",
+                  }}
+                />
+              )}
+            </div>
+            <input
+              type="file"
+              accept={
+                isDynamicGesture(editingAsset.word)
+                  ? "video/mp4,video/webm"
+                  : "video/mp4,video/webm,image/jpeg,image/png,image/webp"
+              }
+              onChange={handleEditFileChange}
+              aria-label="Upload an existing image or video"
+              disabled={
+                submitting ||
+                editCameraState === "requesting" ||
+                editCameraState === "recording"
+              }
+              style={{ marginBottom: 12 }}
+            />
             {editCameraState === "requesting" && (
               <p style={{ fontSize: 13, color: "#6b7280" }}>Requesting camera access…</p>
             )}
-            {editCameraState === "live" && (
+            {(editCameraState === "live" || editCameraState === "recording") && (
               <div>
                 <video
                   ref={editVideoRef}
@@ -571,50 +1139,101 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                     margin: "0 auto 12px",
                   }}
                 />
-                <button onClick={captureEditImage} style={primaryButtonStyle}>
-                  Take photo
-                </button>
+                {editCameraState === "live" ? (
+                  <div style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+                    <button onClick={startEditRecording} style={primaryButtonStyle}>
+                      ● Record video (2–5 sec)
+                    </button>
+                    {!isDynamicGesture(editingAsset.word) && (
+                      <button
+                        onClick={captureEditImage}
+                        style={secondaryButtonStyle}
+                      >
+                        Take photo
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    onClick={stopEditRecording}
+                    disabled={!editCanStopRecording}
+                    style={{
+                      ...dangerButtonStyle,
+                      display: "block",
+                      margin: "0 auto",
+                      opacity: editCanStopRecording ? 1 : 0.55,
+                      cursor: editCanStopRecording ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    {editCanStopRecording
+                      ? "■ Stop recording"
+                      : "Recording — wait 2 seconds"}
+                  </button>
+                )}
               </div>
             )}
-            {editCameraState === "captured" && editPreviewUrl && (
+            {editCameraState === "captured" && editPreviewUrl && editMediaFile && (
               <div>
-                <img
-                  src={editPreviewUrl}
-                  alt={`New image for ${editingAsset.word}`}
-                  style={{
-                    width: "100%",
-                    maxWidth: 640,
-                    height: "clamp(320px, 58vh, 560px)",
-                    objectFit: "contain",
-                    borderRadius: 12,
-                    display: "block",
-                    margin: "0 auto 12px",
-                  }}
-                />
+                {editMediaFile.type.startsWith("video/") ? (
+                  <video
+                    src={editPreviewUrl}
+                    controls
+                    playsInline
+                    style={{
+                      width: "100%",
+                      maxWidth: 640,
+                      height: "clamp(320px, 58vh, 560px)",
+                      objectFit: "contain",
+                      borderRadius: 12,
+                      display: "block",
+                      margin: "0 auto 12px",
+                    }}
+                  />
+                ) : (
+                  <img
+                    src={editPreviewUrl}
+                    alt={`New image for ${editingAsset.word}`}
+                    style={{
+                      width: "100%",
+                      maxWidth: 640,
+                      height: "clamp(320px, 58vh, 560px)",
+                      objectFit: "contain",
+                      borderRadius: 12,
+                      display: "block",
+                      margin: "0 auto 12px",
+                    }}
+                  />
+                )}
                 <div style={{ display: "flex", gap: 10 }}>
                   <button
                     onClick={() => {
                       setEditPreviewUrl(null);
-                      setEditImageFile(null);
+                      setEditMediaFile(null);
                       void startEditCamera();
                     }}
                     style={secondaryButtonStyle}
                   >
-                    Retake
+                    {isDynamicGesture(editingAsset.word)
+                      ? "Record another video"
+                      : "Record again or take another photo"}
                   </button>
                   <button
-                    onClick={() => void saveEditedImage()}
+                    onClick={() => void saveEditedMedia()}
                     disabled={submitting}
                     style={primaryButtonStyle}
                   >
-                    {submitting ? "Saving…" : "Save image"}
+                    {submitting ? "Saving…" : "Save media"}
                   </button>
                 </div>
               </div>
             )}
             {(editCameraState === "idle" || editCameraState === "error") && (
               <button onClick={() => void startEditCamera()} style={primaryButtonStyle}>
-                {editCameraState === "error" ? "Try camera again" : "Turn on camera"}
+                {editCameraState === "error"
+                  ? "Try camera again"
+                  : isDynamicGesture(editingAsset.word)
+                    ? "Use camera to record a video"
+                    : "Use camera to record video or take a photo"}
               </button>
             )}
             {editError && (
@@ -623,7 +1242,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
               </p>
             )}
             <button
-              onClick={cancelImageEdit}
+              onClick={cancelMediaEdit}
               style={{ ...secondaryButtonStyle, marginTop: 16, display: "block" }}
             >
               Cancel
@@ -651,6 +1270,11 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                 ))}
               </select>
             </div>
+            {isDynamicGesture(newWord) && (
+              <p style={{ margin: "-6px 0 12px", color: "#6b7280", fontSize: 13 }}>
+                This is a dynamic sign. Upload or record a video; images are not allowed.
+              </p>
+            )}
             <div style={{ display: "grid", gap: "10px", marginBottom: "14px" }}>
               <input
                 type="text"
@@ -674,7 +1298,7 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
               <div>
                 {recordState === "idle" && (
                   <button onClick={startCamera} style={primaryButtonStyle}>
-                    Turn on camera
+                    Record a video or take a live photo
                   </button>
                 )}
                 {recordState === "requesting" && (
@@ -697,12 +1321,35 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                     />
                     <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
                       {recordState === "live" ? (
-                        <button onClick={startRecording} style={primaryButtonStyle}>
-                          ● Start recording
-                        </button>
+                        <>
+                          <button
+                            onClick={startRecording}
+                            style={primaryButtonStyle}
+                          >
+                            ● Record video (2–5 sec)
+                          </button>
+                          {!isDynamicGesture(newWord) && (
+                            <button
+                              onClick={() => void captureNewImage()}
+                              style={secondaryButtonStyle}
+                            >
+                              Take photo
+                            </button>
+                          )}
+                        </>
                       ) : (
-                        <button onClick={stopRecording} style={dangerButtonStyle}>
-                          ■ Stop recording
+                        <button
+                          onClick={stopRecording}
+                          disabled={!canStopRecording}
+                          style={{
+                            ...dangerButtonStyle,
+                            opacity: canStopRecording ? 1 : 0.55,
+                            cursor: canStopRecording ? "pointer" : "not-allowed",
+                          }}
+                        >
+                          {canStopRecording
+                            ? "■ Stop recording"
+                            : "Recording — wait 2 seconds"}
                         </button>
                       )}
                     </div>
@@ -749,7 +1396,11 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
               <div>
                 <input
                   type="file"
-                  accept="video/mp4,image/jpeg,image/png,image/webp"
+                  accept={
+                    isDynamicGesture(newWord)
+                      ? "video/mp4,video/webm"
+                      : "video/mp4,video/webm,image/jpeg,image/png,image/webp"
+                  }
                   onChange={handleFileChange}
                   style={{ marginBottom: 12 }}
                 />
@@ -819,9 +1470,9 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
               <div style={emptyStateStyle}>
                 <div style={{ fontSize: 40 }}>🤲</div>
                 <p style={{ margin: 0, fontSize: 14 }}>
-                  {assets.length === 0
-                    ? "No signs uploaded yet."
-                    : `No signs match "${search}".`}
+                  {assets.length === 0 && recordedGestures.length === 0
+                    ? "No signs or gestures registered yet."
+                    : `No signs or gestures match "${search}".`}
                 </p>
               </div>
             ) : (
@@ -832,9 +1483,9 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                   gap: "14px",
                 }}
               >
-                {filtered.map((asset) => (
+                {filtered.map((item) => (
                   <div
-                    key={asset.id}
+                    key={item.key}
                     style={{
                       border: "1px solid var(--pearl-border, rgba(15,23,42,0.09))",
                       borderRadius: "12px",
@@ -852,23 +1503,29 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                         justifyContent: "center",
                       }}
                     >
-                      {asset.type?.startsWith("video/") ? (
+                      {item.file && item.type?.startsWith("video/") ? (
                         <video
-                          src={resolveApiUrl(asset.file)}
+                          src={resolveApiUrl(item.file)}
                           controls
                           muted
                           playsInline
                           preload="none"
                           style={{ width: "100%", height: "100%", objectFit: "cover" }}
                         />
-                      ) : (
+                      ) : item.file ? (
                         <img
-                          src={resolveApiUrl(asset.file)}
-                          alt={asset.word}
+                          src={resolveApiUrl(item.file)}
+                          alt={item.word}
                           loading="lazy"
                           decoding="async"
                           style={{ width: "100%", height: "100%", objectFit: "cover" }}
                         />
+                      ) : (
+                        <span style={{ color: "#6b7280", fontSize: 13 }}>
+                          {item.gestureType?.toLowerCase() === "dynamic"
+                            ? "No video uploaded"
+                            : "No image captured"}
+                        </span>
                       )}
                     </div>
                     <p
@@ -882,26 +1539,107 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                         textTransform: "capitalize",
                       }}
                     >
-                      {asset.word}
+                      {item.word}
                     </p>
-                    {canEditImages && asset.type?.startsWith("image/") && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditError(null);
-                          setEditingAsset(asset);
-                          setEditCameraState("idle");
-                        }}
+                    {item.kind === "recorded" && (
+                      <p
                         style={{
-                          ...secondaryButtonStyle,
-                          display: "block",
-                          width: "calc(100% - 20px)",
-                          margin: "0 10px 10px",
-                          padding: "7px 10px",
+                          margin: "0 10px 8px",
+                          color: "var(--pearl-text-muted, #6b7280)",
+                          fontSize: 11,
+                          textAlign: "center",
                         }}
                       >
-                        Edit image
-                      </button>
+                        {item.gestureType?.toLowerCase() === "dynamic"
+                          ? "Dynamic gesture — video media is required."
+                          : "Recorded gesture only — no uploaded image/video yet."}
+                      </p>
+                    )}
+                    {item.recordingCount !== undefined && (
+                      <p
+                        style={{
+                          margin: "-4px 8px 8px",
+                          fontSize: 11,
+                          color: "var(--pearl-text-muted, #6b7280)",
+                          textAlign: "center",
+                        }}
+                      >
+                        Registered · {item.recordingCount} recording
+                        {item.recordingCount === 1 ? "" : "s"}
+                      </p>
+                    )}
+                    {item.kind === "recorded" && canEditMedia && (
+                      <div style={{ padding: "0 10px 10px" }}>
+                        <button
+                          type="button"
+                          onClick={() => addMediaForWord(item.word)}
+                          style={{
+                            ...primaryButtonStyle,
+                            width: "100%",
+                            padding: "7px 10px",
+                          }}
+                        >
+                          {item.gestureType?.toLowerCase() === "dynamic"
+                            ? "Add video"
+                            : "Add image/video"}
+                        </button>
+                      </div>
+                    )}
+                    {item.asset && (canEditMedia || canDeleteAssets) && (
+                      <div
+                        style={{
+                          display: "grid",
+                          gap: "6px",
+                          padding: "0 10px 10px",
+                        }}
+                      >
+                        {canEditMedia && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const asset = item.asset;
+                              if (!asset) return;
+                              setEditError(null);
+                              setEditingAsset(asset);
+                              setEditCameraState("idle");
+                            }}
+                            style={{
+                              ...secondaryButtonStyle,
+                              width: "100%",
+                              padding: "7px 10px",
+                            }}
+                          >
+                            {item.asset.type?.startsWith("video/")
+                              ? "Edit video"
+                              : "Edit image"}
+                          </button>
+                        )}
+                        {canDeleteAssets && (
+                          <button
+                            type="button"
+                            disabled={deletingAssetId === item.asset.id}
+                            onClick={() => {
+                              const asset = item.asset;
+                              if (asset) void deleteAsset(asset);
+                            }}
+                            style={{
+                              ...dangerButtonStyle,
+                              width: "100%",
+                              padding: "7px 10px",
+                              opacity:
+                                deletingAssetId === item.asset.id ? 0.65 : 1,
+                              cursor:
+                                deletingAssetId === item.asset.id
+                                  ? "wait"
+                                  : "pointer",
+                            }}
+                          >
+                            {deletingAssetId === item.asset.id
+                              ? "Deleting…"
+                              : "Delete"}
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 ))}

@@ -8,6 +8,7 @@ import {
   uploadHandCrop,
   attachHandCropUrl,
 } from "../../services/gestureApi";
+import { uploadRecordedSignVideo } from "../../services/api";
 import { recognize } from "../../services/recognitionApi";
 import { RECOGNITION_UI_CONFIG } from "../../config/recognitionConfig";
 import {
@@ -31,6 +32,9 @@ import { loadHolisticScript } from "../../utils/holisticLoader";
 declare const Holistic: any;
 declare const Camera: any;
 const RECORD_FRAMES = 30;
+const MIN_SIGN_VIDEO_DURATION_MS = 2000;
+const MAX_SIGN_VIDEO_DURATION_MS = 5000;
+const LIVE_VIDEO_STOP_BUFFER_MS = 100;
 const RECOGNITION_INTERVAL = 1500;
 export const RECOMMENDED_RECORDINGS = 10;
 const CONSECUTIVE_MATCH_THRESHOLD =
@@ -153,14 +157,19 @@ function loadVideoFile(file: File): Promise<HTMLVideoElement> {
   });
 }
 
-interface AdminSignRecorderProps {
-  onGestureSaved?: () => void;
-}
-const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
-  onGestureSaved,
-}) => {
+const AdminSignRecorder: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoRecordingPromiseRef = useRef<Promise<Blob> | null>(null);
+  const videoChunksRef = useRef<Blob[]>([]);
+  const videoCaptureStartedAtRef = useRef(0);
+  const videoCaptureTimerRef = useRef<number | null>(null);
+  const videoBlobRef = useRef<Blob | null>(null);
+  const finishingRecordingRef = useRef(false);
+  const finishRecordingRef = useRef<
+    ((frames: RecordedFrame[]) => Promise<void>) | null
+  >(null);
   const framesRef = useRef<RecordedFrame[]>([]);
   const [showNameDialog, setShowNameDialog] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -181,6 +190,12 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
   );
   const existingGestureTypeRef = useRef<"static" | "dynamic" | null>(null);
   const [recordedFeatures, setRecordedFeatures] = useState<any[]>([]);
+  const [hasRecordedVideo, setHasRecordedVideo] = useState(false);
+  const [recordingPreview, setRecordingPreview] = useState<{
+    url: string;
+    type: "video" | "image";
+  } | null>(null);
+  const recordingPreviewUrlRef = useRef<string | null>(null);
   const [recordingsForCurrentWord, setRecordingsForCurrentWord] = useState(0);
   // Captured once per take, at the temporal midpoint of the recording — see
   // Phase 1 CNN plan. Null until capture succeeds; upload happens lazily in
@@ -221,9 +236,84 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
     currentLabelRef.current = label;
     setCurrentLabel(label);
   }, []);
+  const clearRecordingPreview = useCallback(() => {
+    if (recordingPreviewUrlRef.current) {
+      URL.revokeObjectURL(recordingPreviewUrlRef.current);
+      recordingPreviewUrlRef.current = null;
+    }
+    setRecordingPreview(null);
+  }, []);
+  const setRecordingPreviewFromBlob = useCallback(
+    (blob: Blob, type: "video" | "image") => {
+      clearRecordingPreview();
+      const url = URL.createObjectURL(blob);
+      recordingPreviewUrlRef.current = url;
+      setRecordingPreview({ url, type });
+    },
+    [clearRecordingPreview],
+  );
+  useEffect(
+    () => () => {
+      if (recordingPreviewUrlRef.current) {
+        URL.revokeObjectURL(recordingPreviewUrlRef.current);
+      }
+    },
+    [],
+  );
   useEffect(() => {
     setIsCameraOn(true);
   }, []);
+  const startVideoCapture = useCallback(() => {
+    const stream = videoRef.current?.srcObject;
+    if (!(stream instanceof MediaStream)) {
+      throw new Error("Camera video stream is unavailable");
+    }
+    if (!window.MediaRecorder) {
+      throw new Error("Video recording is not supported in this browser");
+    }
+    const supportedType = [
+      "video/webm;codecs=vp9",
+      "video/webm;codecs=vp8",
+      "video/webm",
+      "video/mp4",
+    ].find((type) => MediaRecorder.isTypeSupported(type));
+    const recorder = new MediaRecorder(
+      stream,
+      supportedType ? { mimeType: supportedType } : undefined,
+    );
+    videoChunksRef.current = [];
+    videoBlobRef.current = null;
+    videoRecordingPromiseRef.current = new Promise<Blob>((resolve, reject) => {
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) videoChunksRef.current.push(event.data);
+      });
+      recorder.addEventListener("stop", () => {
+        const blob = new Blob(videoChunksRef.current, {
+          type: recorder.mimeType || "video/webm",
+        });
+        if (blob.size > 0) resolve(blob);
+        else reject(new Error("The camera did not produce a video recording"));
+      });
+      recorder.addEventListener("error", () =>
+        reject(new Error("The camera video recording failed")),
+      );
+    });
+    recorder.start(100);
+    videoCaptureStartedAtRef.current = Date.now();
+    videoRecorderRef.current = recorder;
+    videoCaptureTimerRef.current = window.setTimeout(() => {
+      const capturedFrames = [...framesRef.current];
+      videoCaptureTimerRef.current = null;
+      if (capturedFrames.length >= 4) {
+        void finishRecordingRef.current?.(capturedFrames);
+      } else {
+        isRecordingRef.current = false;
+        setIsRecording(false);
+        updateLabel("Not enough hand movement captured — try again");
+        if (recorder.state === "recording") recorder.stop();
+      }
+    }, MAX_SIGN_VIDEO_DURATION_MS - LIVE_VIDEO_STOP_BUFFER_MS);
+  }, [updateLabel]);
   const startRecording = useCallback(async () => {
     if (isRecording || !cameraReadyRef.current) {
       if (!cameraReadyRef.current) {
@@ -231,6 +321,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
       }
       return;
     }
+    clearRecordingPreview();
     updateLabel("Get Ready...");
     setRecordProgress(0);
     framesRef.current = [];
@@ -253,28 +344,86 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
       } else {
         clearInterval(timer);
         setCountdown(null);
-        setIsRecording(true);
-        isRecordingRef.current = true;
-        updateLabel("Recording...");
+        try {
+          startVideoCapture();
+          setIsRecording(true);
+          isRecordingRef.current = true;
+          updateLabel("Recording...");
+        } catch (error) {
+          console.error("Could not start camera video recording:", error);
+          updateLabel("Video recording unavailable");
+          alert(
+            error instanceof Error
+              ? error.message
+              : "Could not start video recording",
+          );
+        }
       }
     }, 1000);
-  }, [isRecording, updateLabel]);
+  }, [
+    clearRecordingPreview,
+    isRecording,
+    startVideoCapture,
+    updateLabel,
+  ]);
   const finishRecording = useCallback(
-    async (frames: RecordedFrame[]) => {
+    async (frames: RecordedFrame[], suppliedVideo?: Blob) => {
+      if (finishingRecordingRef.current) return;
+      finishingRecordingRef.current = true;
       isRecordingRef.current = false;
       setIsRecording(false);
+      if (videoCaptureTimerRef.current !== null) {
+        window.clearTimeout(videoCaptureTimerRef.current);
+        videoCaptureTimerRef.current = null;
+      }
+      const elapsed = Date.now() - videoCaptureStartedAtRef.current;
+      if (!suppliedVideo && elapsed > 0 && elapsed < MIN_SIGN_VIDEO_DURATION_MS) {
+        updateLabel("Finishing 2-second video...");
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, MIN_SIGN_VIDEO_DURATION_MS - elapsed),
+        );
+      }
+      const recorder = videoRecorderRef.current;
+      if (!suppliedVideo && recorder?.state === "recording") recorder.stop();
+      if (suppliedVideo) {
+        videoBlobRef.current = suppliedVideo;
+      } else if (videoRecordingPromiseRef.current) {
+        try {
+          videoBlobRef.current = await videoRecordingPromiseRef.current;
+        } catch (error) {
+          console.error("Could not finish camera video recording:", error);
+          alert(
+            "The gesture video could not be recorded. Please record the gesture again.",
+          );
+          finishingRecordingRef.current = false;
+          return;
+        }
+      }
+      videoRecorderRef.current = null;
+      videoRecordingPromiseRef.current = null;
+      if (videoBlobRef.current) {
+        setRecordingPreviewFromBlob(videoBlobRef.current, "video");
+      }
       setRecordProgress(RECORD_FRAMES);
       setRecordedFeatures(frames.map((f) => f.features));
+      setHasRecordedVideo(Boolean(videoBlobRef.current));
       recognitionFramesRef.current = [];
       setShowNameDialog(true);
       updateLabel("Recording Complete");
+      finishingRecordingRef.current = false;
     },
-    [updateLabel],
+    [setRecordingPreviewFromBlob, updateLabel],
   );
+  useEffect(() => {
+    finishRecordingRef.current = finishRecording;
+  }, [finishRecording]);
   const processUploadedVideo = useCallback(
     async (file: File) => {
       if (isProcessingUpload || isRecording) return;
       setIsProcessingUpload(true);
+      clearRecordingPreview();
+      videoBlobRef.current = null;
+      setHasRecordedVideo(false);
       setUploadProgress(0);
       updateLabel("Reading video...");
       let objectUrl: string | null = null;
@@ -283,8 +432,13 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         const video = await loadVideoFile(file);
         objectUrl = video.src;
         const duration = video.duration;
-        if (!duration || !isFinite(duration) || duration < 0.3) {
-          alert("Couldn't read this video, or it's too short.");
+        if (
+          !duration ||
+          !isFinite(duration) ||
+          duration < MIN_SIGN_VIDEO_DURATION_MS / 1000 ||
+          duration > MAX_SIGN_VIDEO_DURATION_MS / 1000
+        ) {
+          alert("Dynamic sign videos must be between 2 and 5 seconds long.");
           return;
         }
         await loadHolisticScript();
@@ -376,7 +530,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         }
         handCropBlobRef.current = midpointCropBlob;
         handCropCapturedForTakeRef.current = true;
-        await finishRecording(sampledFrames);
+        await finishRecording(sampledFrames, file);
       } catch (err) {
         console.error("Video upload processing failed:", err);
         alert("Couldn't process this video. Try a different file or record live.");
@@ -388,7 +542,13 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         setUploadProgress(0);
       }
     },
-    [isProcessingUpload, isRecording, finishRecording, updateLabel],
+    [
+      clearRecordingPreview,
+      isProcessingUpload,
+      isRecording,
+      finishRecording,
+      updateLabel,
+    ],
   );
   // Image-import path: lets an admin/teacher save a still photo of a hand
   // shape as a reference sample. A photo has no motion, so it can only be a
@@ -397,6 +557,9 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
     async (file: File) => {
       if (isProcessingUpload || isRecording) return;
       setIsProcessingUpload(true);
+      clearRecordingPreview();
+      videoBlobRef.current = null;
+      setHasRecordedVideo(false);
       updateLabel("Reading image...");
       let objectUrl: string | null = null;
       try {
@@ -412,6 +575,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
           updateLabel("Waiting...");
           return;
         }
+        setRecordingPreviewFromBlob(file, "image");
         // Optional reference thumbnail; a failed crop never blocks the take.
         const box = computeHandBoundingBox(
           pickDominantHandLandmarks(extraction.leftHand, extraction.rightHand),
@@ -420,6 +584,8 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         );
         handCropBlobRef.current = box ? await cropImageToBlob(image, box) : null;
         handCropCapturedForTakeRef.current = true;
+        videoBlobRef.current = null;
+        setHasRecordedVideo(false);
         setGestureType("static");
         await finishRecording([
           { timestamp: Date.now(), features: extraction.features },
@@ -433,7 +599,14 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         setIsProcessingUpload(false);
       }
     },
-    [isProcessingUpload, isRecording, finishRecording, updateLabel],
+    [
+      clearRecordingPreview,
+      isProcessingUpload,
+      isRecording,
+      finishRecording,
+      setRecordingPreviewFromBlob,
+      updateLabel,
+    ],
   );
   const saveRecordedGesture = useCallback(async () => {
     // Synchronous guard — see isSavingRef above. Must be the very first
@@ -486,6 +659,33 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         );
         if (!proceed) return;
       }
+      if (gestureType === "dynamic") {
+        if (!videoBlobRef.current) {
+          alert(
+            "Dynamic gestures need a 2-to-5-second video. Record or upload a video before saving.",
+          );
+          return;
+        }
+        const videoType = videoBlobRef.current.type || "video/webm";
+        const extension = videoType.includes("mp4") ? "mp4" : "webm";
+        const videoFile = new File(
+          [videoBlobRef.current],
+          `${gestureName.trim()}.${extension}`,
+          { type: videoType },
+        );
+        try {
+          await uploadRecordedSignVideo(videoFile, {
+            word: gestureName.trim(),
+            language: "FSL",
+          });
+        } catch (error) {
+          console.error("Could not save dynamic sign video:", error);
+          alert(
+            `The gesture video could not be uploaded: ${error instanceof Error ? error.message : "unknown error"}`,
+          );
+          return;
+        }
+      }
       // Save immediately once consistency-check has cleared — the hand-crop
       // upload no longer blocks this. It has no timeout of its own (unlike
       // every other call here) and stalling on it was the actual source of
@@ -519,9 +719,8 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
       }
       const newCount = recordingsForCurrentWord + 1;
       setRecordingsForCurrentWord(newCount);
-      onGestureSaved?.();
       // Only static (handshape) takes need a hand crop — it's shown to
-      // admins/teachers as a reference thumbnail (see AdminSigns.tsx). A
+      // admins/teachers as a reference thumbnail in the sign library. A
       // missing crop on a dynamic (DTW) take is expected and fine, since
       // dynamic signs are matched on the landmark sequence alone. Without
       // this warning, a take with a failed/skipped crop capture (see
@@ -533,7 +732,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
           : "";
       if (newCount < RECOMMENDED_RECORDINGS) {
         alert(
-          `Gesture saved! (${newCount}/${RECOMMENDED_RECORDINGS} recordings for "${gestureName.trim()}") — record ${RECOMMENDED_RECORDINGS - newCount} more from slightly different angles/distances.${cropWarning}`,
+          `Gesture saved! (${newCount}/${RECOMMENDED_RECORDINGS} recordings for "${gestureName.trim()}") — record ${RECOMMENDED_RECORDINGS - newCount} more clean repetitions. Keep the meaning-defining finger direction and palm orientation the same; include both hands only if either hand should count as this sign.${cropWarning}`,
         );
       } else {
         alert(
@@ -543,6 +742,9 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
       setShowNameDialog(false);
       setRecordedFeatures([]);
       setGestureType("dynamic");
+      videoBlobRef.current = null;
+      setHasRecordedVideo(false);
+      clearRecordingPreview();
       existingGestureTypeRef.current = null;
       framesRef.current = [];
       recognitionFramesRef.current = [];
@@ -559,6 +761,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
     gestureType,
     recordedFeatures,
     recordingsForCurrentWord,
+    clearRecordingPreview,
     updateLabel,
   ]);
   useEffect(() => {
@@ -586,8 +789,8 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         holistic.setOptions({
           modelComplexity: 0,
           smoothLandmarks: true,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5,
+          minDetectionConfidence: 0.4,
+          minTrackingConfidence: 0.35,
         });
         holistic.onResults(async (results: any) => {
       if (stopped) return;
@@ -861,7 +1064,7 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
       </div>
 
       <p style={styles.recordingForText}>
-        You can upload a video (any sign) or an image (static hand shapes only) as a reference sample.
+        Upload a 2-to-5-second video for dynamic motion signs, or an image for a static hand shape.
       </p>
 
       {gestureName && (
@@ -945,9 +1148,33 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
         <div style={styles.modalOverlay}>
           <div style={styles.modalCard}>
             <h3 style={styles.modalTitle}>Save Gesture</h3>
+            {recordingPreview && (
+              <div style={styles.recordingPreview}>
+                {recordingPreview.type === "video" ? (
+                  <video
+                    controls
+                    playsInline
+                    preload="metadata"
+                    src={recordingPreview.url}
+                    style={styles.recordingPreviewMedia}
+                  />
+                ) : (
+                  <img
+                    src={recordingPreview.url}
+                    alt="Recorded gesture preview"
+                    style={styles.recordingPreviewMedia}
+                  />
+                )}
+              </div>
+            )}
             <p style={styles.modalTip}>
-              Tip: record the same sign 3+ times from slightly different angles
-              for best accuracy.
+              Review this take before saving. If the hand shape or motion is
+              wrong, choose Retake and record it again.
+            </p>
+            <p style={styles.modalTip}>
+              The recognizer compares up to ten recordings. Keep the
+              meaning-defining finger direction and palm orientation the same;
+              include both hands only if either hand should count as this sign.
             </p>
 
             <input
@@ -971,10 +1198,19 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
                   key={type}
                   type="button"
                   onClick={() => setGestureType(type)}
+                  disabled={type === "dynamic" && !hasRecordedVideo}
+                  title={
+                    type === "dynamic" && !hasRecordedVideo
+                      ? "Record or upload a 2-to-5-second video first"
+                      : undefined
+                  }
                   style={{
                     ...styles.gestureTypeBtn,
                     ...(gestureType === type
                       ? styles.gestureTypeBtnActive
+                      : {}),
+                    ...(type === "dynamic" && !hasRecordedVideo
+                      ? { opacity: 0.5, cursor: "not-allowed" }
                       : {}),
                   }}
                 >
@@ -985,9 +1221,31 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
             <p style={styles.modalTip}>
               A word is always one or the other — pick "Static" only for
               signs that are a single held handshape with no movement.
+              Dynamic signs require a 2-to-5-second video.
             </p>
 
             <div style={styles.modalActions}>
+              <button
+                onClick={() => {
+                  setShowNameDialog(false);
+                  setRecordedFeatures([]);
+                  setHasRecordedVideo(false);
+                  videoBlobRef.current = null;
+                  clearRecordingPreview();
+                  setRecordProgress(0);
+                  setGestureType("dynamic");
+                  existingGestureTypeRef.current = null;
+                  framesRef.current = [];
+                  recognitionFramesRef.current = [];
+                  handCropBlobRef.current = null;
+                  handCropCapturedForTakeRef.current = false;
+                  handCropAttemptInFlightRef.current = false;
+                }}
+                disabled={isSaving}
+                style={styles.modalCancelBtn}
+              >
+                Retake
+              </button>
               <button
                 onClick={saveRecordedGesture}
                 disabled={isSaving}
@@ -1003,6 +1261,9 @@ const AdminSignRecorder: React.FC<AdminSignRecorderProps> = ({
                   setShowNameDialog(false);
                   setGestureName("");
                   setRecordedFeatures([]);
+                  setHasRecordedVideo(false);
+                  videoBlobRef.current = null;
+                  clearRecordingPreview();
                   setRecordingsForCurrentWord(0);
                   setGestureType("dynamic");
                   existingGestureTypeRef.current = null;
@@ -1266,6 +1527,8 @@ const styles = {
     padding: 32,
     borderRadius: 16,
     minWidth: 380,
+    maxHeight: "90vh",
+    overflowY: "auto",
     color: "#fff",
     border: "1px solid rgba(255,255,255,0.08)",
     boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
@@ -1273,6 +1536,20 @@ const styles = {
   modalTitle: {
     margin: "0 0 6px",
     fontSize: 19,
+  } as React.CSSProperties,
+  recordingPreview: {
+    width: "100%",
+    margin: "12px 0",
+    overflow: "hidden",
+    borderRadius: 8,
+    background: "#000",
+  } as React.CSSProperties,
+  recordingPreviewMedia: {
+    display: "block",
+    width: "100%",
+    maxHeight: 220,
+    objectFit: "contain",
+    background: "#000",
   } as React.CSSProperties,
   modalTip: {
     fontSize: 13,
@@ -1314,10 +1591,11 @@ const styles = {
   } as React.CSSProperties,
   modalActions: {
     display: "flex",
+    flexWrap: "wrap",
     gap: 12,
   } as React.CSSProperties,
   modalSaveBtn: {
-    flex: 1,
+    flex: "1 1 100%",
     padding: "12px",
     background: "#00cc66",
     color: "white",
@@ -1333,7 +1611,7 @@ const styles = {
     opacity: 0.75,
   } as React.CSSProperties,
   modalCancelBtn: {
-    flex: 1,
+    flex: "1 1 130px",
     padding: "12px",
     background: "rgba(255,255,255,0.08)",
     color: "white",

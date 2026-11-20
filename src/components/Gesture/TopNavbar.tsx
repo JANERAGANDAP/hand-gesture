@@ -2,97 +2,63 @@ import React from "react";
 type Mode = "gesture" | "speech";
 interface TopNavbarProps {
   activeLang: string;
-  sidebarOpen: boolean;
-  toggleSidebar: () => void;
   isCapturing: boolean;
   onToggleCapture: () => void;
   onShowHistory: () => void;
   onShowLibrary: () => void;
   mode: Mode;
   onModeChange: (mode: Mode) => void;
-  userName?: string;
   userRole?: string;
-  onManageSigns?: () => void;
-  onLogout: () => void;
 }
 const TopNavbar: React.FC<TopNavbarProps> = ({
   activeLang,
-  sidebarOpen,
-  toggleSidebar,
   isCapturing,
   onToggleCapture,
   onShowHistory,
   onShowLibrary,
   mode,
   onModeChange,
-  userName,
   userRole,
-  onManageSigns,
-  onLogout,
 }) => {
   return (
     <header className="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
-      {}
-      <div className="d-flex align-items-center justify-content-between justify-content-md-start">
-        <div className="d-flex align-items-center">
-          <button
-            type="button"
-            aria-label={sidebarOpen ? "Close navigation" : "Open navigation"}
-            className="btn me-3"
-            onClick={toggleSidebar}
+      <div>
+        <h2
+          className="h5 h-md-4 fw-bold m-0"
+          style={{ color: "var(--pearl-text, #1f2937)" }}
+        >
+          Live Recognition
+        </h2>
+
+        <p
+          className="small m-0 d-flex flex-wrap align-items-center gap-2"
+          style={{ color: "var(--pearl-text-muted, #6b7280)" }}
+        >
+          <span>
+            Optimized for{" "}
+            <span
+              className="fw-bold"
+              style={{ color: "var(--pastel-periwinkle-deep, #7fa0e8)" }}
+            >
+              {activeLang}
+            </span>
+          </span>
+
+          <span
             style={{
-              background: "var(--pearl-surface, #fff)",
-              color: "var(--pearl-text, #1f2937)",
-              border: "1px solid var(--pearl-border, rgba(15,23,42,0.09))",
-              boxShadow: "0 2px 6px rgba(15,23,42,0.06)",
-              width: 46,
-              height: 46,
-              borderRadius: 14,
-              fontSize: 20,
+              fontSize: "10px",
+              fontWeight: 700,
+              background: "rgba(169,193,242,0.35)",
+              border: "1px solid rgba(127,160,232,0.5)",
+              color: "#3f5a94",
+              padding: "1px 8px",
+              borderRadius: "20px",
+              whiteSpace: "nowrap",
             }}
           >
-            {sidebarOpen ? "✕" : "☰"}
-          </button>
-
-          <div>
-            <h2
-              className="h5 h-md-4 fw-bold m-0"
-              style={{ color: "var(--pearl-text, #1f2937)" }}
-            >
-              Live Recognition
-            </h2>
-
-            <p
-              className="small m-0 d-flex flex-wrap align-items-center gap-2"
-              style={{ color: "var(--pearl-text-muted, #6b7280)" }}
-            >
-              <span>
-                Optimized for{" "}
-                <span
-                  className="fw-bold"
-                  style={{ color: "var(--pastel-periwinkle-deep, #7fa0e8)" }}
-                >
-                  {activeLang}
-                </span>
-              </span>
-
-              <span
-                style={{
-                  fontSize: "10px",
-                  fontWeight: 700,
-                  background: "rgba(169,193,242,0.35)",
-                  border: "1px solid rgba(127,160,232,0.5)",
-                  color: "#3f5a94",
-                  padding: "1px 8px",
-                  borderRadius: "20px",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                🤖 AI
-              </span>
-            </p>
-          </div>
-        </div>
+            🤖 AI
+          </span>
+        </p>
       </div>
 
       {}
@@ -139,7 +105,7 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
               minHeight: 44,
             }}
           >
-            ✋ Gesture
+            ✋ Gesture to Text
           </button>
 
           <button
@@ -162,11 +128,11 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
               minHeight: 44,
             }}
           >
-            🎤 Speech
+            🎤 Speech to Gesture
           </button>
         </div>
 
-        {mode === "speech" && (
+        {(userRole === "ADMIN" || userRole === "TEACHER") && (
           <button
             className="btn"
             onClick={onShowLibrary}
@@ -201,46 +167,6 @@ const TopNavbar: React.FC<TopNavbarProps> = ({
           }}
         >
           HISTORY
-        </button>
-
-        {}
-        {userRole && userRole !== "STUDENT" && onManageSigns && (
-          <button
-            className="btn"
-            onClick={onManageSigns}
-            style={{
-              background: "linear-gradient(135deg, #8b5cf6, #7c3aed)",
-              color: "#fff",
-              border: "none",
-              boxShadow: "0 2px 8px rgba(124, 58, 237, 0.3)",
-              whiteSpace: "nowrap",
-              borderRadius: 14,
-              minHeight: 46,
-              padding: "10px 18px",
-              fontSize: 14,
-              fontWeight: 700,
-            }}
-          >
-            📹 Manage & Record Signs
-          </button>
-        )}
-
-        <button
-          className="btn"
-          onClick={onLogout}
-          title={userName ? `Signed in as ${userName}` : undefined}
-          style={{
-            background: "var(--pastel-coral, #f3b3ae)",
-            color: "#8a2f2a",
-            border: "none",
-            borderRadius: 14,
-            minHeight: 46,
-            padding: "10px 18px",
-            fontSize: 14,
-            fontWeight: 700,
-          }}
-        >
-          LOGOUT
         </button>
 
         {}

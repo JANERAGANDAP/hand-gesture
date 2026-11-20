@@ -122,6 +122,19 @@ async function findDuplicate(word: string) {
   return existingSigns.find((sign) => isSameSignWord(sign.word, word));
 }
 
+async function hasDynamicGesture(word: string, gestureId?: number | null) {
+  const gestures = await prisma.signGesture.findMany({
+    where: {
+      isActive: true,
+      ...(gestureId ? { gestureId } : { word }),
+    },
+    select: { gestureType: true },
+  });
+  return gestures.some(
+    (gesture) => gesture.gestureType.toLowerCase() === "dynamic",
+  );
+}
+
 function parseTranslationsField(value: unknown): GestureTranslations | null {
   let parsed = value;
   if (typeof value === "string") {
@@ -159,6 +172,90 @@ function parseAliasesField(value: unknown): string[] | null {
   }
   return parsed.map((alias: string) => alias.trim()).filter(Boolean);
 }
+
+router.post(
+  "/recorded-video",
+  authenticate,
+  requireRole("TEACHER", "ADMIN"),
+  handleUpload("file"),
+  async (req: AuthedRequest, res) => {
+    let uploadedKey: string | null = null;
+    try {
+      const word =
+        typeof req.body.word === "string" ? sanitizeSignWord(req.body.word) : "";
+      const language =
+        typeof req.body.language === "string" ? req.body.language.trim() : "";
+      const file = req.file;
+      if (!normalizeGestureKey(word)) {
+        return res.status(400).json({ success: false, error: "Word is required" });
+      }
+      if (!language) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Language is required" });
+      }
+      if (!file || !normalizeMimeType(file.mimetype).startsWith("video/")) {
+        return res
+          .status(400)
+          .json({ success: false, error: "A video file is required" });
+      }
+
+      const fileType = normalizeMimeType(file.mimetype);
+      uploadedKey = `${SIGNS_PREFIX}${randomUUID()}${MIME_EXTENSIONS[fileType]}`;
+      await putObject(PUBLIC_BUCKET, uploadedKey, file.buffer, fileType);
+      const fileUrl = publicObjectUrl(PUBLIC_BUCKET, uploadedKey);
+      const saved = await prisma.$transaction(async (tx) => {
+        const gesture = await syncGestureRegistry(tx, { word, language });
+        const existingVideo = await tx.signAsset.findFirst({
+          where: {
+            gestureId: gesture.id,
+            type: { startsWith: "video/" },
+          },
+        });
+        const existingAsset =
+          existingVideo ??
+          (await tx.signAsset.findFirst({
+            where: { gestureId: gesture.id },
+          }));
+        const asset = existingAsset
+          ? await tx.signAsset.update({
+              where: { id: existingAsset.id },
+              data: { word, file: fileUrl, type: fileType, isPublished: true },
+            })
+          : await tx.signAsset.create({
+              data: {
+                word,
+                file: fileUrl,
+                type: fileType,
+                isPublished: true,
+                gestureId: gesture.id,
+              },
+            });
+        return { asset, previousFile: existingAsset?.file ?? null };
+      });
+      uploadedKey = null;
+      const previousKey = saved.previousFile
+        ? keyFromUrl(saved.previousFile, PUBLIC_BUCKET)
+        : null;
+      if (previousKey) await deleteObjects(PUBLIC_BUCKET, [previousKey]);
+      return res.json({
+        success: true,
+        id: saved.asset.id,
+        word: saved.asset.word,
+        file: saved.asset.file,
+        type: saved.asset.type,
+        isPublished: saved.asset.isPublished,
+      });
+    } catch (error) {
+      if (uploadedKey) await deleteObjects(PUBLIC_BUCKET, [uploadedKey]);
+      console.error("Recorded sign video upload failed:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Could not save the recorded sign video",
+      });
+    }
+  },
+);
 
 async function saveUploadedSign(
   word: string,
@@ -251,7 +348,11 @@ function parseChunkUploadMetadata(body: Record<string, unknown>) {
   };
 }
 
-router.post("/chunk/start", authenticate, async (req: AuthedRequest, res) => {
+router.post(
+  "/chunk/start",
+  authenticate,
+  requireRole("TEACHER", "ADMIN"),
+  async (req: AuthedRequest, res) => {
   try {
     if (!usesObjectStorage()) {
       return res.status(501).json({
@@ -263,6 +364,14 @@ router.post("/chunk/start", authenticate, async (req: AuthedRequest, res) => {
     const metadata = parseChunkUploadMetadata(req.body ?? {});
     if (!metadata) {
       return res.status(400).json({ error: "Invalid upload metadata" });
+    }
+    if (
+      !metadata.fileType.startsWith("video/") &&
+      (await hasDynamicGesture(metadata.word))
+    ) {
+      return res.status(400).json({
+        error: "Dynamic signs must use video media.",
+      });
     }
     const duplicate = await findDuplicate(metadata.word);
     if (duplicate) {
@@ -284,6 +393,7 @@ router.post("/chunk/start", authenticate, async (req: AuthedRequest, res) => {
 router.post(
   "/chunk/part",
   authenticate,
+  requireRole("TEACHER", "ADMIN"),
   handleUpload("file", chunkUpload, "3MB"),
   async (req: AuthedRequest, res) => {
     const file = req.file;
@@ -316,28 +426,45 @@ router.post(
   },
 );
 
-router.post("/chunk/complete", authenticate, async (req: AuthedRequest, res) => {
+router.post(
+  "/chunk/complete",
+  authenticate,
+  requireRole("TEACHER", "ADMIN"),
+  async (req: AuthedRequest, res) => {
   const user = req.user;
-  const metadata = parseChunkUploadMetadata(req.body ?? {});
+  const parsedMetadata = parseChunkUploadMetadata(req.body ?? {});
   const sessionId = req.body?.sessionId;
   const chunkCount = Number(req.body?.chunkCount);
   if (
     !user ||
-    !metadata ||
+    !parsedMetadata ||
     !isUploadSessionId(sessionId) ||
     !Number.isInteger(chunkCount) ||
-    chunkCount !== Math.ceil(metadata.size / MAX_CHUNK_SIZE_BYTES) ||
+    chunkCount !== Math.ceil(parsedMetadata.size / MAX_CHUNK_SIZE_BYTES) ||
     chunkCount < 1 ||
     chunkCount > MAX_CHUNK_COUNT
   ) {
     return res.status(400).json({ error: "Invalid upload completion request" });
   }
+  const metadata = {
+    ...parsedMetadata,
+    isPublished: user.role === "ADMIN" ? parsedMetadata.isPublished : true,
+  };
 
   const chunkKeys = Array.from({ length: chunkCount }, (_, part) =>
     stagingKey(user.id, sessionId, part),
   );
 
   try {
+    if (
+      !metadata.fileType.startsWith("video/") &&
+      (await hasDynamicGesture(metadata.word))
+    ) {
+      await deleteObjects(PRIVATE_BUCKET, chunkKeys);
+      return res.status(400).json({
+        error: "Dynamic signs must use video media.",
+      });
+    }
     const duplicate = await findDuplicate(metadata.word);
     if (duplicate) {
       await deleteObjects(PRIVATE_BUCKET, chunkKeys);
@@ -387,7 +514,11 @@ router.post("/chunk/complete", authenticate, async (req: AuthedRequest, res) => 
   }
 });
 
-router.post("/chunk/abort", authenticate, async (req: AuthedRequest, res) => {
+router.post(
+  "/chunk/abort",
+  authenticate,
+  requireRole("TEACHER", "ADMIN"),
+  async (req: AuthedRequest, res) => {
   const user = req.user;
   const sessionId = req.body?.sessionId;
   const chunkCount = Number(req.body?.chunkCount);
@@ -412,13 +543,11 @@ router.post("/chunk/abort", authenticate, async (req: AuthedRequest, res) => {
   return res.json({ success: true });
 });
 
-// Uploading a sign asset — any signed-in user (students included). This
-// endpoint is now shared by two different UIs: the Admin sign-management
-// page (AdminSigns.tsx, unchanged) and the new record/upload actions
-// inside the student-facing Sign Library (SignLibraryModal.tsx).
+// Sign media registration is limited to teacher and admin accounts.
 router.post(
   "/",
   authenticate,
+  requireRole("TEACHER", "ADMIN"),
   handleUpload("file"),
   async (req: AuthedRequest, res) => {
   try {
@@ -465,14 +594,23 @@ router.post(
         error: "No file uploaded",
       });
     }
+    const fileType = normalizeMimeType(file.mimetype);
+    if (
+      !fileType.startsWith("video/") &&
+      (await hasDynamicGesture(word))
+    ) {
+      return res.status(400).json({
+        error: "Dynamic signs must use video media.",
+      });
+    }
     // Optional staging flag from FormData (always a string, or absent).
     // Absent/anything other than the literal "false" keeps today's
     // default behavior: published immediately. Only TEACHER/ADMIN
     // uploads (AdminSigns.tsx) are expected to ever send "false" — the
     // student-facing Sign Library upload flow never sends this field,
     // so it always publishes immediately as previously agreed.
-    const isPublished = req.body.publish !== "false";
-    const fileType = normalizeMimeType(file.mimetype);
+    const isPublished =
+      req.user?.role === "ADMIN" && req.body.publish === "false" ? false : true;
     const objectKey = `${SIGNS_PREFIX}${randomUUID()}${MIME_EXTENSIONS[fileType]}`;
     try {
       await putObject(PUBLIC_BUCKET, objectKey, file.buffer, fileType);
@@ -500,9 +638,9 @@ router.post(
   }
 });
 router.put(
-  "/:id/image",
+  "/:id/media",
   authenticate,
-  requireRole("TEACHER", "ADMIN"),
+  requireRole("ADMIN"),
   handleUpload("file"),
   async (req: AuthedRequest, res) => {
     let rawId: string | string[] | undefined = req.params.id;
@@ -511,8 +649,12 @@ router.put(
     if (!Number.isInteger(id) || id < 1) {
       return res.status(400).json({ error: "Valid numeric id is required" });
     }
-    if (!req.file || !normalizeMimeType(req.file.mimetype).startsWith("image/")) {
-      return res.status(400).json({ error: "An image file is required" });
+    if (
+      !req.file ||
+      (!normalizeMimeType(req.file.mimetype).startsWith("image/") &&
+        !normalizeMimeType(req.file.mimetype).startsWith("video/"))
+    ) {
+      return res.status(400).json({ error: "An image or video file is required" });
     }
 
     try {
@@ -522,6 +664,14 @@ router.put(
       }
 
       const fileType = normalizeMimeType(req.file.mimetype);
+      if (
+        !fileType.startsWith("video/") &&
+        (await hasDynamicGesture(existing.word, existing.gestureId))
+      ) {
+        return res.status(400).json({
+          error: "Dynamic signs must use video media.",
+        });
+      }
       const objectKey = `${SIGNS_PREFIX}${randomUUID()}${MIME_EXTENSIONS[fileType]}`;
       await putObject(PUBLIC_BUCKET, objectKey, req.file.buffer, fileType);
 
@@ -552,23 +702,23 @@ router.put(
         type: updated.type,
       });
     } catch (error) {
-      console.error("Sign image replacement failed:", error);
+      console.error("Sign media replacement failed:", error);
       if (
         error instanceof Error &&
         error.message.startsWith("Missing required object storage setting:")
       ) {
         return res.status(503).json({
           error:
-            "Image storage is not configured for this API deployment. Set AWS_ENDPOINT_URL_S3, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY, then redeploy.",
+            "Media storage is not configured for this API deployment. Set AWS_ENDPOINT_URL_S3, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY, then redeploy.",
         });
       }
-      return res.status(500).json({ error: "Failed to replace sign image" });
+      return res.status(500).json({ error: "Failed to replace sign media" });
     }
   },
 );
 // Fixing whitespace-only issues on an existing upload's word text (see
-// signWordText.ts / the health-check endpoint in signs.routes.ts) —
-// TEACHER or ADMIN, same as the publish toggle above. Intentionally only
+// signWordText.ts / the health-check endpoint in signs.routes.ts) — Admin
+// only. Intentionally only
 // re-sanitizes whatever text the client sends rather than accepting
 // arbitrary new text, so this endpoint can't be repurposed as a general
 // rename — that's a bigger feature (would need to also update any
@@ -577,7 +727,7 @@ router.put(
 router.patch(
   "/:id/word",
   authenticate,
-  requireRole("TEACHER", "ADMIN"),
+  requireRole("ADMIN"),
   async (req, res) => {
   try {
     let rawId: string | string[] | undefined = req.params.id;
@@ -626,13 +776,11 @@ router.patch(
     });
   }
 });
-// Toggling the staging flag on an existing upload — TEACHER or ADMIN
-// (not STUDENT: the staging gate exists to let teachers review before
-// publishing, so students shouldn't be able to flip it themselves).
+// Publishing state is managed by admins; teachers can register media only.
 router.patch(
   "/:id/publish",
   authenticate,
-  requireRole("TEACHER", "ADMIN"),
+  requireRole("ADMIN"),
   async (req, res) => {
   try {
     let rawId: string | string[] | undefined = req.params.id;

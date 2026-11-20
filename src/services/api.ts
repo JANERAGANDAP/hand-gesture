@@ -4,6 +4,33 @@ import { compressSignImage } from "../utils/compressSignImage";
 const API_BASE = `${API_ROOT}/api`;
 const SIGN_LIBRARY_CACHE_KEY = "sign-library-cache-v1";
 const SIGN_LIBRARY_UPDATED_EVENT = "sign-library-updated";
+const MIN_SIGN_VIDEO_SECONDS = 2;
+const MAX_SIGN_VIDEO_SECONDS = 5;
+
+async function validateSignVideoDuration(file: File): Promise<void> {
+  if (!file.type.startsWith("video/")) return;
+  const objectUrl = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  try {
+    const duration = await new Promise<number>((resolve, reject) => {
+      video.onloadedmetadata = () => resolve(video.duration);
+      video.onerror = () => reject(new Error("Could not read the selected video."));
+      video.src = objectUrl;
+    });
+    if (
+      !Number.isFinite(duration) ||
+      duration < MIN_SIGN_VIDEO_SECONDS ||
+      duration > MAX_SIGN_VIDEO_SECONDS
+    ) {
+      throw new Error("Dynamic sign videos must be between 2 and 5 seconds long.");
+    }
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+    video.removeAttribute("src");
+    video.load();
+  }
+}
 
 export function invalidateSignLibraryCache() {
   try {
@@ -41,6 +68,7 @@ export async function uploadSignAsset(
     aliases?: string[];
   },
 ) {
+  await validateSignVideoDuration(file);
   const uploadFile = await compressSignImage(file);
   const metadata = {
     word: options.word,
@@ -145,11 +173,33 @@ export async function uploadSignAsset(
   }
 }
 
-export async function replaceSignAssetImage(id: number, file: File) {
+export async function uploadRecordedSignVideo(
+  file: File,
+  options: { word: string; language: string },
+): Promise<{ id: number; word: string; file: string; type: string }> {
+  const formData = new FormData();
+  formData.append("word", options.word);
+  formData.append("language", options.language);
+  formData.append("file", file);
+  const response = await fetch(buildUrl("/upload/recorded-video"), {
+    method: "POST",
+    headers: authHeaders(),
+    body: formData,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.success) {
+    throw new Error(body.error || body.message || `HTTP ${response.status}`);
+  }
+  invalidateSignLibraryCache();
+  return body;
+}
+
+export async function replaceSignAssetMedia(id: number, file: File) {
+  await validateSignVideoDuration(file);
   const uploadFile = await compressSignImage(file);
   const formData = new FormData();
   formData.append("file", uploadFile);
-  const response = await fetch(buildUrl(`/upload/${id}/image`), {
+  const response = await fetch(buildUrl(`/upload/${id}/media`), {
     method: "PUT",
     headers: authHeaders(),
     body: formData,
@@ -166,6 +216,27 @@ export async function replaceSignAssetImage(id: number, file: File) {
     file: string;
     type: string;
   };
+}
+
+export async function deleteSignAsset(id: number, word: string) {
+  if (!Number.isSafeInteger(id) || id < 1 || !word.trim()) {
+    throw new Error("A valid sign ID and word are required.");
+  }
+
+  const formData = new FormData();
+  formData.append("id", String(id));
+  formData.append("word", word);
+  const response = await fetch(buildUrl("/upload/delete"), {
+    method: "DELETE",
+    headers: authHeaders(),
+    body: formData,
+  });
+  const body: { success?: boolean; error?: string; message?: string } =
+    await response.json().catch(() => ({}));
+  if (!response.ok || !body.success) {
+    throw new Error(body.error || body.message || `HTTP ${response.status}`);
+  }
+  invalidateSignLibraryCache();
 }
 
 async function handle(response: Response) {

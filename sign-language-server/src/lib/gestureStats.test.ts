@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   dtwDistance,
+  frameDistance,
   frameToFrameDistance,
   distanceToConfidence,
   buildWordStats,
@@ -97,6 +98,189 @@ test("frameToFrameDistance: a boolean flag mismatch adds a fixed penalty", () =>
     left_hand_open: false,
   });
   assert.equal(frameToFrameDistance(a, b, stats, globalStats), 9);
+});
+test("frameToFrameDistance: different extended fingers receive a shape penalty", () => {
+  const stats = neutralWordStats();
+  const globalStats = neutralGlobalStats();
+  const thumbUp = frame({
+    left_finger_extensions: [1, 0, 0, 0, 0],
+  });
+  const indexUp = frame({
+    left_finger_extensions: [0, 1, 0, 0, 0],
+  });
+  assert.ok(frameToFrameDistance(thumbUp, indexUp, stats, globalStats) > 0);
+});
+test("frameDistance: extension features improve separation and legacy samples remain compatible", () => {
+  const sample = frame({
+    left_fingers: [true, false, false, false, false],
+    left_finger_extensions: [1, 0, 0, 0, 0],
+    right_finger_extensions: [0, 0, 0, 0, 0],
+  });
+  const globalStats = buildGlobalStats([
+    { word: "thumbs up", features: sample },
+  ]);
+  const stats = buildWordStats(
+    "thumbs up",
+    [{ word: "thumbs up", gestureType: "static", features: sample }],
+    globalStats,
+  );
+  const pointingUp = frame({
+    left_fingers: [false, true, false, false, false],
+    left_finger_extensions: [0, 1, 0, 0, 0],
+    right_finger_extensions: [0, 0, 0, 0, 0],
+  });
+  assert.ok(
+    frameDistance(pointingUp, stats, globalStats) >
+      frameDistance(sample, stats, globalStats),
+  );
+
+  const legacy = frame();
+  const legacyWithExtensions = frame({
+    left_finger_extensions: [0, 1, 0, 0, 0],
+    right_finger_extensions: [0, 0, 0, 0, 0],
+  });
+  const legacyStats = buildWordStats(
+    "legacy",
+    [{ word: "legacy", features: legacy }],
+    buildGlobalStats([{ word: "legacy", features: legacy }]),
+  );
+  assert.equal(legacyStats.fingerExtensionMean, undefined);
+  assert.equal(
+    frameToFrameDistance(
+      legacy,
+      legacyWithExtensions,
+      legacyStats,
+      neutralGlobalStats(),
+    ),
+    0,
+  );
+});
+test("frameDistance: records which hand was present without penalizing legacy samples", () => {
+  const leftHandSample = frame({
+    left_hand_detected: true,
+    right_hand_detected: false,
+  });
+  const globalStats = buildGlobalStats([
+    { word: "left hand", features: leftHandSample },
+  ]);
+  const stats = buildWordStats(
+    "left hand",
+    [{ word: "left hand", features: leftHandSample }],
+    globalStats,
+  );
+  const rightHandCurrent = frame({
+    left_hand_detected: false,
+    right_hand_detected: true,
+  });
+  assert.ok(
+    frameDistance(rightHandCurrent, stats, globalStats) >
+      frameDistance(leftHandSample, stats, globalStats),
+  );
+
+  const legacy = frame();
+  const legacyStats = buildWordStats(
+    "legacy",
+    [{ word: "legacy", features: legacy }],
+    buildGlobalStats([{ word: "legacy", features: legacy }]),
+  );
+  assert.equal(legacyStats.handPresenceRate, undefined);
+  assert.equal(
+    frameToFrameDistance(
+      legacy,
+      rightHandCurrent,
+      legacyStats,
+      neutralGlobalStats(),
+    ),
+    0,
+  );
+});
+test("frameDistance: pointing direction and finger-joint bends distinguish similar handshapes", () => {
+  const indexPointingUp = frame({
+    right_hand_detected: true,
+    right_finger_directions: [
+      0, 0, 0,
+      0, -1, 0,
+      0, 0, 0,
+      0, 0, 0,
+      0, 0, 0,
+    ],
+    right_finger_joint_angles: Array(15).fill(1),
+  });
+  const globalStats = buildGlobalStats([
+    { word: "point up", features: indexPointingUp },
+  ]);
+  const stats = buildWordStats(
+    "point up",
+    [{ word: "point up", features: indexPointingUp }],
+    globalStats,
+  );
+  const pointAtSomeone = frame({
+    right_hand_detected: true,
+    right_finger_directions: [
+      0, 0, 0,
+      0, 0, 1,
+      0, 0, 0,
+      0, 0, 0,
+      0, 0, 0,
+    ],
+    right_finger_joint_angles: [1, 1, 0.4, ...Array(12).fill(1)],
+  });
+
+  assert.ok(
+    frameDistance(pointAtSomeone, stats, globalStats) >
+      frameDistance(indexPointingUp, stats, globalStats),
+  );
+  assert.ok(
+    frameToFrameDistance(
+      indexPointingUp,
+      pointAtSomeone,
+      stats,
+      globalStats,
+    ) > 0,
+  );
+
+  const legacy = frame();
+  const legacyStats = buildWordStats(
+    "legacy",
+    [{ word: "legacy", features: legacy }],
+    buildGlobalStats([{ word: "legacy", features: legacy }]),
+  );
+  assert.equal(
+    frameToFrameDistance(
+      legacy,
+      indexPointingUp,
+      legacyStats,
+      neutralGlobalStats(),
+    ),
+    0,
+  );
+});
+test("frameDistance: palm and back-of-hand orientation receives a direct penalty", () => {
+  const palmFacingCamera = frame({
+    right_hand_detected: true,
+    right_palm_normal_x: 0,
+    right_palm_normal_y: 0,
+    right_palm_normal_z: 1,
+  });
+  const globalStats = buildGlobalStats([
+    { word: "palm-facing", features: palmFacingCamera },
+  ]);
+  const stats = buildWordStats(
+    "palm-facing",
+    [{ word: "palm-facing", features: palmFacingCamera }],
+    globalStats,
+  );
+  const backOfHand = frame({
+    right_hand_detected: true,
+    right_palm_normal_x: 0,
+    right_palm_normal_y: 0,
+    right_palm_normal_z: -1,
+  });
+
+  assert.ok(
+    frameDistance(backOfHand, stats, globalStats) >
+      frameDistance(palmFacingCamera, stats, globalStats),
+  );
 });
 test("dtwDistance: empty sequences on either side return Infinity", () => {
   const stats = neutralWordStats();

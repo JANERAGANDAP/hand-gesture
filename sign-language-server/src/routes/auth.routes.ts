@@ -361,6 +361,33 @@ router.delete(
   },
 );
 
+router.get(
+  "/users",
+  authenticate,
+  requireRole("ADMIN"),
+  async (_req, res) => {
+    try {
+      const users = await prisma.user.findMany({
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      return res.json({ success: true, users });
+    } catch (err) {
+      console.error("List users error:", err);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to load users",
+      });
+    }
+  },
+);
+
 router.get("/me", authenticate, (req: AuthedRequest, res) => {
   return res.json({
     success: true,

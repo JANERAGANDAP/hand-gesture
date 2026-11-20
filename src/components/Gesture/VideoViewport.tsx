@@ -9,7 +9,6 @@ import { recognize } from "../../services/recognitionApi";
 import { loadHolisticScript } from "../../utils/holisticLoader";
 import { drawSkeleton } from "../../utils/drawSkeleton";
 declare const Camera: any;
-const AUTO_SPEAK_IDLE_MS = 2500;
 const RECOGNITION_REQUEST_INTERVAL_MS = 750;
 function normalizeConfidence(raw: number): number {
   const value = raw > 1 ? raw / 100 : raw;
@@ -38,9 +37,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const lastWordRef = useRef("");
   const lastWordTimeRef = useRef(0);
-  const sentenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sentenceBufferRef = useRef<string[]>([]);
-  const autoSpeakRef = useRef(true);
   const stabilityTrackerRef = useRef(
     new GestureStabilityTracker(
       RECOGNITION_UI_CONFIG.CONFIDENCE_THRESHOLD,
@@ -62,7 +59,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
   // Bumped by the Retry button to re-run model loading and camera start.
   const [modelRetryKey, setModelRetryKey] = useState(0);
   const [recognitionHint, setRecognitionHint] = useState("");
-  const [autoSpeak, setAutoSpeak] = useState(true);
   // Latest language, read inside the camera effect so changing language
   // does not restart the camera or reload the hand-tracking model.
   const languageRef = useRef(language);
@@ -91,13 +87,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
     showToastRef.current = showToast;
   }, [showToast]);
   useEffect(() => {
-    autoSpeakRef.current = autoSpeak;
-    if (!autoSpeak && sentenceTimerRef.current) {
-      clearTimeout(sentenceTimerRef.current);
-      sentenceTimerRef.current = null;
-    }
-  }, [autoSpeak]);
-  useEffect(() => {
     if (!isCapturing) {
       handVisibleRef.current = false;
       setHandVisible(false);
@@ -118,10 +107,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       stabilityTrackerRef.current.reset();
       unknownStreakRef.current = 0;
       setIsUnknown(false);
-      if (sentenceTimerRef.current) {
-        clearTimeout(sentenceTimerRef.current);
-        sentenceTimerRef.current = null;
-      }
       lastWordRef.current = "";
       lastWordTimeRef.current = 0;
     }
@@ -147,7 +132,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
             `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file.replace(/^\/+/, "")}`,
         });
         holistic.setOptions({
-          modelComplexity: 0,
+          modelComplexity: 1,
           smoothLandmarks: true,
           minDetectionConfidence: 0.5,
           minTrackingConfidence: 0.5,
@@ -313,29 +298,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
             setConfidence(0);
             stabilityTrackerRef.current.reset();
             setPreviewWord(null);
-            if (
-              autoSpeakRef.current &&
-              sentenceBufferRef.current.length > 0 &&
-              sentenceTimerRef.current === null
-            ) {
-              sentenceTimerRef.current = setTimeout(() => {
-                const bufferedWords = sentenceBufferRef.current;
-                if (bufferedWords.length > 0) {
-                  onGestureDetectedRef.current?.(
-                    buildSmartSentence(bufferedWords),
-                    languageRef.current,
-                  );
-                  sentenceBufferRef.current = [];
-                  setSentence([]);
-                }
-                sentenceTimerRef.current = null;
-              }, AUTO_SPEAK_IDLE_MS);
-            }
             return;
-          }
-          if (sentenceTimerRef.current) {
-            clearTimeout(sentenceTimerRef.current);
-            sentenceTimerRef.current = null;
           }
           const now = Date.now();
           if (
@@ -423,19 +386,11 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
       }
       handVisibleRef.current = false;
       recordedFrames.length = 0;
-      if (sentenceTimerRef.current) {
-        clearTimeout(sentenceTimerRef.current);
-        sentenceTimerRef.current = null;
-      }
       cam?.stop();
       holistic?.close();
     };
   }, [isCapturing, modelRetryKey]);
   const speakSentence = () => {
-    if (sentenceTimerRef.current) {
-      clearTimeout(sentenceTimerRef.current);
-      sentenceTimerRef.current = null;
-    }
     if (sentenceBufferRef.current.length === 0) return;
     onGestureDetectedRef.current?.(
       buildSmartSentence(sentenceBufferRef.current),
@@ -447,19 +402,11 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
     stabilityTrackerRef.current.reset();
   };
   const undoLastWord = () => {
-    if (sentenceTimerRef.current) {
-      clearTimeout(sentenceTimerRef.current);
-      sentenceTimerRef.current = null;
-    }
     const updated = sentenceBufferRef.current.slice(0, -1);
     sentenceBufferRef.current = updated;
     setSentence(updated);
   };
   const clearSentence = () => {
-    if (sentenceTimerRef.current) {
-      clearTimeout(sentenceTimerRef.current);
-      sentenceTimerRef.current = null;
-    }
     sentenceBufferRef.current = [];
     setSentence([]);
     lastWordRef.current = "";
@@ -509,7 +456,7 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
         {sentence.length > 0 || previewWord ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#6b7280" }}>
-              Sentence buffer {sentence.length > 0 ? `(${sentence.length} signs)` : ""}
+              Recognized signs {sentence.length > 0 ? `(${sentence.length})` : ""}
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, flexWrap: "wrap" }}>
               {sentence.map((word, index) => (
@@ -532,12 +479,9 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
                 <span style={{ color: "#9ca3af" }}>Your signs will appear here</span>
               )}
             </div>
-            <div style={{ fontSize: "clamp(20px, 5.5vw, 28px)", fontWeight: 800, color: "#1f2937", lineHeight: 1.2 }}>
-              💬 {sentence.length > 0 ? buildSmartSentence(sentence) : ""}
-            </div>
             <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <button type="button" onClick={speakSentence} disabled={sentence.length === 0} style={styles.sentenceButton}>
-                Speak Sentence
+                Compose &amp; speak
               </button>
               <button type="button" onClick={undoLastWord} disabled={sentence.length === 0} style={styles.sentenceButton}>
                 Backspace / Undo
@@ -545,14 +489,6 @@ const VideoViewport: React.FC<VideoViewportProps> = ({
               <button type="button" onClick={clearSentence} disabled={sentence.length === 0} style={styles.sentenceButton}>
                 Clear
               </button>
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#4b5563" }}>
-                <input
-                  type="checkbox"
-                  checked={autoSpeak}
-                  onChange={(event) => setAutoSpeak(event.target.checked)}
-                />
-                Auto-speak after hands leave for 2.5 seconds
-              </label>
             </div>
           </div>
         ) : isUnknown ? (

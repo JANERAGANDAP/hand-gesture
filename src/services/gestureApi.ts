@@ -181,6 +181,35 @@ export interface RecordedGestureSummary {
   handCropUrl: string | null;
   lastRecordedAt: string;
 }
+export interface RegisteredGestureLibraryEntry {
+  word: string;
+  gestureType: string;
+  count: number;
+  handCropUrl: string | null;
+}
+export async function getGestureLibrary(): Promise<{
+  success: boolean;
+  words: RegisteredGestureLibraryEntry[];
+  error?: string;
+}> {
+  try {
+    return await apiClient.get<{
+      success: boolean;
+      words: RegisteredGestureLibraryEntry[];
+      error?: string;
+    }>("/gestures/library");
+  } catch (error) {
+    console.error("Failed to load registered gestures:", error);
+    return {
+      success: false,
+      words: [],
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load registered gestures",
+    };
+  }
+}
 export async function getGestureSummary(): Promise<{
   success: boolean;
   words: RecordedGestureSummary[];

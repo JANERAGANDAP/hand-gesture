@@ -9,7 +9,7 @@ export const RECOGNITION_CONFIG = {
   // Raised to sit close to RECORD_FRAMES so live comparisons cover most
   // of a full gesture instead of just its last fraction of a second.
   MAX_LIVE_FRAMES: 28,
-  MAX_SEQUENCES_PER_WORD: 3,
+  MAX_SEQUENCES_PER_WORD: 10,
   DYNAMIC_MATCH_DISTANCE_LIMIT: 35,
   INTERNAL_DISTANCE_MULTIPLIER: 2.2,
   MIN_EFFECTIVE_LIMIT: 28,

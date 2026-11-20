@@ -19,6 +19,10 @@ import {
   syncGestureRegistry,
 } from "../utils/gestureRegistry";
 import {
+  hasIrregularWhitespace,
+  sanitizeSignWord,
+} from "../utils/signWordText";
+import {
   parsePremadeGestureImport,
   type PremadeGestureInput,
 } from "../utils/premadeGestureImport";
@@ -68,7 +72,7 @@ router.post(
   "/bulk",
   uploadLimiter,
   authenticate,
-  requireRole("TEACHER", "ADMIN"),
+  requireRole("ADMIN"),
   parseBulkGestureFile,
   async (req, res) => {
     if (!req.file) {
@@ -588,6 +592,134 @@ function parseGestureId(rawId: string | string[] | undefined): number | null {
 // grouped by word — so recording progress is visible without having to
 // export the raw dataset. Registered before "/:id" since "summary" would
 // otherwise be swallowed by that single-segment param route.
+router.get("/library", authenticate, async (_req, res) => {
+  try {
+    const gestures = await prisma.signGesture.findMany({
+      where: { isActive: true },
+      select: {
+        word: true,
+        gestureType: true,
+        handCropUrl: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    const byWord = new Map<
+      string,
+      {
+        word: string;
+        gestureType: string;
+        count: number;
+        handCropUrl: string | null;
+      }
+    >();
+    for (const gesture of gestures) {
+      const key = gesture.word.trim().toLocaleLowerCase();
+      const existing = byWord.get(key);
+      if (!existing) {
+        byWord.set(key, {
+          word: gesture.word,
+          gestureType: gesture.gestureType,
+          count: 1,
+          handCropUrl: gesture.handCropUrl,
+        });
+        continue;
+      }
+      existing.count += 1;
+      if (!existing.handCropUrl && gesture.handCropUrl) {
+        existing.handCropUrl = gesture.handCropUrl;
+      }
+    }
+    let handCropWarning = false;
+    const words = await Promise.all(
+      Array.from(byWord.values())
+        .sort((left, right) => left.word.localeCompare(right.word))
+        .map(async (word) => {
+          try {
+            return {
+              ...word,
+              handCropUrl: await signHandCropUrl(word.handCropUrl),
+            };
+          } catch (error) {
+            handCropWarning = true;
+            console.error(
+              `Could not sign the hand-crop image for registered sign "${word.word}":`,
+              error,
+            );
+            return { ...word, handCropUrl: null };
+          }
+        }),
+    );
+    res.json({
+      success: true,
+      words,
+      ...(handCropWarning
+        ? { warning: "Some registered-gesture images are unavailable." }
+        : {}),
+    });
+  } catch (error) {
+    console.error("Gesture library error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to load registered gestures",
+    });
+  }
+});
+router.get(
+  "/health-check",
+  authenticate,
+  requireRole("ADMIN"),
+  async (_req, res) => {
+    try {
+      const gestures = await prisma.signGesture.findMany({
+        where: { isActive: true },
+        select: { id: true, word: true, language: true },
+      });
+      const flaggedByWord = new Map<
+        string,
+        {
+          id: number;
+          word: string;
+          language: string;
+          cleaned: string;
+          count: number;
+        }
+      >();
+      for (const gesture of gestures) {
+        if (!hasIrregularWhitespace(gesture.word)) continue;
+        const key = `${gesture.word}\u0000${gesture.language}`;
+        const flagged = flaggedByWord.get(key);
+        if (flagged) {
+          flagged.count += 1;
+        } else {
+          flaggedByWord.set(key, {
+            id: gesture.id,
+            word: gesture.word,
+            language: gesture.language,
+            cleaned: sanitizeSignWord(gesture.word),
+            count: 1,
+          });
+        }
+      }
+      const flagged = Array.from(flaggedByWord.values()).sort((a, b) =>
+        a.word.localeCompare(b.word),
+      );
+      return res.json({
+        success: true,
+        totalChecked: gestures.length,
+        flaggedCount: flagged.length,
+        flagged,
+      });
+    } catch (error) {
+      console.error("Recorded gesture health check failed:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to run recorded gesture health check",
+      });
+    }
+  },
+);
+
 router.get(
   "/summary",
   authenticate,
@@ -868,6 +1000,79 @@ router.delete(
   },
 );
 
+router.patch(
+  "/by-word/:word/word",
+  authenticate,
+  requireRole("ADMIN"),
+  async (req, res) => {
+    try {
+      const rawWord = Array.isArray(req.params.word)
+        ? req.params.word[0]
+        : req.params.word;
+      if (!rawWord) {
+        return res.status(400).json({
+          success: false,
+          error: "Word is required",
+        });
+      }
+      const language =
+        typeof req.query.language === "string"
+          ? req.query.language.trim()
+          : undefined;
+      const existing = await prisma.signGesture.findMany({
+        where: {
+          word: rawWord,
+          ...(language ? { language } : {}),
+          isActive: true,
+        },
+        select: { language: true },
+      });
+      if (existing.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: "No active recordings found for this word",
+        });
+      }
+
+      const cleaned = sanitizeSignWord(rawWord);
+      let updatedCount = 0;
+      await prisma.$transaction(async (tx) => {
+        for (const currentLanguage of new Set(
+          existing.map((gesture) => gesture.language),
+        )) {
+          const registryEntry = await syncGestureRegistry(tx, {
+            word: cleaned,
+            language: currentLanguage,
+          });
+          const updated = await tx.signGesture.updateMany({
+            where: {
+              word: rawWord,
+              language: currentLanguage,
+              isActive: true,
+            },
+            data: {
+              word: cleaned,
+              gestureId: registryEntry.id,
+            },
+          });
+          updatedCount += updated.count;
+        }
+      });
+      clearStatsCache();
+      return res.json({
+        success: true,
+        word: cleaned,
+        updated: updatedCount,
+      });
+    } catch (error) {
+      console.error("Recorded gesture word cleanup failed:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to clean up recorded gesture word",
+      });
+    }
+  },
+);
 
 router.get("/dataset/export/all", authenticate, requireRole("TEACHER", "ADMIN"), async (_, res) => {
   try {

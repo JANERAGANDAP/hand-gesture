@@ -1,54 +1,78 @@
 export const FRAME_JITTER_THRESHOLD = 0.9;
 export const MIN_MOVEMENT_FOR_DIRECTION_CHECK = 0.05;
 export interface WristSnapshot {
-  leftX: number;
-  leftY: number;
-  rightX: number;
-  rightY: number;
+  leftX: number | null;
+  leftY: number | null;
+  rightX: number | null;
+  rightY: number | null;
 }
 export function wristSnapshot(features: any): WristSnapshot {
   return {
-    leftX: features.left_wrist_x ?? 0,
-    leftY: features.left_wrist_y ?? 0,
-    rightX: features.right_wrist_x ?? 0,
-    rightY: features.right_wrist_y ?? 0,
+    leftX: features.left_hand_detected ? features.left_wrist_x ?? null : null,
+    leftY: features.left_hand_detected ? features.left_wrist_y ?? null : null,
+    rightX: features.right_hand_detected
+      ? features.right_wrist_x ?? null
+      : null,
+    rightY: features.right_hand_detected
+      ? features.right_wrist_y ?? null
+      : null,
   };
+}
+function wristMovement(
+  before: WristSnapshot,
+  after: WristSnapshot,
+  hand: "left" | "right",
+) {
+  const beforeX = before[`${hand}X`];
+  const beforeY = before[`${hand}Y`];
+  const afterX = after[`${hand}X`];
+  const afterY = after[`${hand}Y`];
+  if (
+    beforeX === null ||
+    beforeY === null ||
+    afterX === null ||
+    afterY === null
+  ) {
+    return null;
+  }
+  const dx = afterX - beforeX;
+  const dy = afterY - beforeY;
+  return { dx, dy, magnitude: Math.hypot(dx, dy) };
 }
 export function isTrackingGlitch(history: WristSnapshot[]): boolean {
   if (history.length < 3) return false;
   const [prev2, prev1, curr] = history.slice(-3);
-  const dxL1 = prev1.leftX - prev2.leftX;
-  const dyL1 = prev1.leftY - prev2.leftY;
-  const dxL2 = curr.leftX - prev1.leftX;
-  const dyL2 = curr.leftY - prev1.leftY;
-  const dxR1 = prev1.rightX - prev2.rightX;
-  const dyR1 = prev1.rightY - prev2.rightY;
-  const dxR2 = curr.rightX - prev1.rightX;
-  const dyR2 = curr.rightY - prev1.rightY;
-  const magL1 = Math.hypot(dxL1, dyL1);
-  const magL2 = Math.hypot(dxL2, dyL2);
-  const magR1 = Math.hypot(dxR1, dyR1);
-  const magR2 = Math.hypot(dxR2, dyR2);
-  const leftMeaningful =
-    magL1 > MIN_MOVEMENT_FOR_DIRECTION_CHECK &&
-    magL2 > MIN_MOVEMENT_FOR_DIRECTION_CHECK;
-  const rightMeaningful =
-    magR1 > MIN_MOVEMENT_FOR_DIRECTION_CHECK &&
-    magR2 > MIN_MOVEMENT_FOR_DIRECTION_CHECK;
-  const leftReversed = leftMeaningful && dxL1 * dxL2 + dyL1 * dyL2 < 0;
-  const rightReversed = rightMeaningful && dxR1 * dxR2 + dyR1 * dyR2 < 0;
-  const totalJump = magL2 + magR2;
+  const leftPrevious = wristMovement(prev2, prev1, "left");
+  const leftCurrent = wristMovement(prev1, curr, "left");
+  const rightPrevious = wristMovement(prev2, prev1, "right");
+  const rightCurrent = wristMovement(prev1, curr, "right");
+  const leftReversed =
+    leftPrevious !== null &&
+    leftCurrent !== null &&
+    leftPrevious.magnitude > MIN_MOVEMENT_FOR_DIRECTION_CHECK &&
+    leftCurrent.magnitude > MIN_MOVEMENT_FOR_DIRECTION_CHECK &&
+    leftPrevious.dx * leftCurrent.dx + leftPrevious.dy * leftCurrent.dy < 0;
+  const rightReversed =
+    rightPrevious !== null &&
+    rightCurrent !== null &&
+    rightPrevious.magnitude > MIN_MOVEMENT_FOR_DIRECTION_CHECK &&
+    rightCurrent.magnitude > MIN_MOVEMENT_FOR_DIRECTION_CHECK &&
+    rightPrevious.dx * rightCurrent.dx +
+      rightPrevious.dy * rightCurrent.dy <
+      0;
+  const totalJump =
+    (leftCurrent?.magnitude ?? 0) + (rightCurrent?.magnitude ?? 0);
   return (leftReversed || rightReversed) && totalJump > FRAME_JITTER_THRESHOLD;
 }
 export function sustainedWristSpeed(history: WristSnapshot[]): number {
   if (history.length < 2) return 0;
   let total = 0;
   for (let i = 1; i < history.length; i++) {
-    const a = history[i - 1];
-    const b = history[i];
+    const previous = history[i - 1];
+    const current = history[i];
     total +=
-      Math.hypot(b.leftX - a.leftX, b.leftY - a.leftY) +
-      Math.hypot(b.rightX - a.rightX, b.rightY - a.rightY);
+      (wristMovement(previous, current, "left")?.magnitude ?? 0) +
+      (wristMovement(previous, current, "right")?.magnitude ?? 0);
   }
   return total / (history.length - 1);
 }
