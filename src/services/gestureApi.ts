@@ -237,7 +237,9 @@ export async function deleteWord(
     const response = await apiClient.delete<any>(
       `/gestures/by-word/${encodeURIComponent(word)}?language=${encodeURIComponent(language)}`,
     );
-    return response.data ?? response;
+    const result = response.data ?? response;
+    if (result?.success) invalidateSignLibraryCache();
+    return result;
   } catch (error: any) {
     console.error("Failed to delete word:", error);
     return {

@@ -6,6 +6,7 @@ import {
   uploadSignAsset,
 } from "../../services/api";
 import {
+  deleteWord,
   getGestureLibrary,
   type RegisteredGestureLibraryEntry,
 } from "../../services/gestureApi";
@@ -126,6 +127,12 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletingAssetId, setDeletingAssetId] = useState<number | null>(null);
+  const [gestureDeleteError, setGestureDeleteError] = useState<string | null>(
+    null,
+  );
+  const [deletingGestureWord, setDeletingGestureWord] = useState<string | null>(
+    null,
+  );
 
   // Record-a-sign panel (mode === "gesture")
   const [recordState, setRecordState] = useState<RecordState>("idle");
@@ -828,6 +835,44 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
     }
   };
 
+  const deleteRecordedGesture = async (word: string) => {
+    if (!canDeleteAssets || deletingGestureWord !== null) return;
+    if (
+      !window.confirm(
+        `Delete all recorded gesture data for "${word}" across languages? Uploaded images and videos will not be deleted.`,
+      )
+    ) {
+      return;
+    }
+
+    setGestureDeleteError(null);
+    setDeletingGestureWord(word);
+    try {
+      const result = await deleteWord(word, "");
+      if (!result.success) {
+        throw new Error(result.error ?? "Failed to delete recorded gesture");
+      }
+      setRecordedGestures((current) =>
+        current.filter(
+          (gesture) =>
+            gesture.word.trim().toLowerCase() !== word.trim().toLowerCase(),
+        ),
+      );
+      setSubmitSuccess(`Recorded gesture data for "${word}" was deleted.`);
+      onSignAdded?.();
+      setTimeout(() => setSubmitSuccess(null), 4000);
+    } catch (err) {
+      console.error("Recorded gesture deletion failed:", err);
+      setGestureDeleteError(
+        err instanceof Error
+          ? err.message
+          : "Recorded gesture deletion failed. Check your connection and try again.",
+      );
+    } finally {
+      setDeletingGestureWord(null);
+    }
+  };
+
   const normalizedSearch = search.trim().toLowerCase();
   const matchingAssets = assets.filter((asset) =>
     asset.word.toLowerCase().includes(normalizedSearch),
@@ -1456,6 +1501,11 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
           </div>
         ) : (
           <div style={{ overflowY: "auto", flex: 1, padding: "1rem 1.5rem" }}>
+            {gestureDeleteError && (
+              <p role="alert" style={{ color: "#b42318", margin: "0 0 12px" }}>
+                {gestureDeleteError}
+              </p>
+            )}
             {loading ? (
               <div style={emptyStateStyle}>
                 <div style={{ fontSize: 40 }}>⏳</div>
@@ -1582,6 +1632,29 @@ const SignLibraryModal: React.FC<SignLibraryModalProps> = ({
                           {item.gestureType?.toLowerCase() === "dynamic"
                             ? "Add video"
                             : "Add image/video"}
+                        </button>
+                      </div>
+                    )}
+                    {canDeleteAssets && item.recordingCount !== undefined && (
+                      <div style={{ padding: "0 10px 10px" }}>
+                        <button
+                          type="button"
+                          disabled={deletingGestureWord !== null}
+                          onClick={() => void deleteRecordedGesture(item.word)}
+                          style={{
+                            ...dangerButtonStyle,
+                            width: "100%",
+                            padding: "7px 10px",
+                            opacity: deletingGestureWord !== null ? 0.65 : 1,
+                            cursor:
+                              deletingGestureWord === item.word
+                                ? "wait"
+                                : "pointer",
+                          }}
+                        >
+                          {deletingGestureWord === item.word
+                            ? "Deleting…"
+                            : "Delete recorded gesture"}
                         </button>
                       </div>
                     )}
